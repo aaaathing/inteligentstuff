@@ -7,8 +7,9 @@ GbarE = 1; GbarI = 1; GbarL = 0.2; GbarK = 1; ErevE = 1; ErevL = 0.3; ErevI = 0.
 VmC = 2.81; ExpSlope = 0.02
 Thr = 0.5
 GeDt = 1/5; GiDt = 1/7
+
 FFAvgDt = 1/50
-FB_weight = 1; FSTau = 1/6; GiOverallScaling = 1.1; FS0 = 0.1
+FB_weight = 1; FSTau = 6; GiOverallScaling = 1.1; FS0 = 0.1
 SSiTau = 50; SSfTau = 20; SSExtraFactor = 30
 
 class Path:
@@ -40,6 +41,8 @@ class Pools:
 		self.FSi = 0
 		self.SSi = 0
 		self.SSf = 0
+		self.gInhibit = None
+	
 	def inhibit(self, layer):
 		self.FFsRaw = layer.gExciteRaw.sum(0)
 		self.FBsRaw = layer.spike.sum(0)
@@ -52,13 +55,16 @@ class Pools:
 		# Fast spiking (FS) PV from FFs and FBs
 		self.FSi = FFs + FB_weight * FBs - self.FSi / FSTau
 		FSGi = GiOverallScaling * max(self.FSi - FS0, 0)
+		print("fs",self.FSi, FSGi)
 
 		# Slow spiking (SS) SST from FBs only, with facilitation factor SSf
 		self.SSi += (self.SSf * FBs - self.SSi) / SSiTau
 		self.SSf += FBs * (1 - self.SSf) - self.SSf / SSfTau
 		SSGi = GiOverallScaling * SSExtraFactor * self.SSi
+		print("ss",self.SSi,self.SSf,SSGi)
 
-		layer.gInhibit = FSGi + SSGi
+		self.gInhibit = FSGi + SSGi
+	
 		
 
 class Layer:
@@ -66,22 +72,25 @@ class Layer:
 		self.size = size
 		self.paths = []
 		self.gExciteRaw = torch.zeros(size)
-		self.gInhibitSyn = torch.zeros(size)
+		self.gInhibitRaw = torch.zeros(size)
 		self.gExcite = torch.zeros(size) # these reset every time
 		self.gInhibit = torch.zeros(size)
 		self.potential = torch.zeros(size)
-		self.spike = None
+		self.spike = torch.zeros(size)
 		self.sentSpike = torch.zeros(size)
+		self.pools = Pools()
+
 	"""def decay(self):
 		decayOfActivation = 0.2
 		self.gExciteSyn *= 1-decayOfActivation
-		self.gInhibitSyn *= 1-decayOfActivation
-		self.potential *= 1-decayOfActivation"""
+		self.gInhibitRaw *= 1-decayOfActivation
+		self.potential *= 1-decayOfActivation
+	"""
 	def gatherInputs(self):
 		# gather spikes init
 		#gExciteRaw = torch.zeros(self.size)
 		self.gExciteRaw.zero_() # todo: set to avg
-		self.gInhibitSyn.zero_() # todo: set to avg
+		self.gInhibitRaw.zero_() # todo: set to avg
 
 		for path in self.paths:
 			assert path.reciever == self
@@ -89,9 +98,13 @@ class Layer:
 		#self.gExciteSyn += gExciteRaw
 		self.gExcite = self.gExciteRaw # todo: add external input to gExcite
 		# todo: add noise to gExcite
+		self.gInhibit = self.gInhibitRaw
+	def layerInhibit(self):
+		self.pools.inhibit(self)
+		self.gInhibit += self.pools.gInhibit
 	def update(self):
 		# Vm is self.potential
-		Inet = GbarE * self.gExcite * (ErevE - self.potential) + GbarI * self.gInhibit * (ErevI - self.potential) + GbarL * (ErevL - self.potential) #+ GbarK * Gk * (ErevK - self.potential)
+		Inet = GbarE * self.gExcite * (ErevE - self.potential) - GbarI * self.gInhibit * (ErevI - self.potential) + GbarL * (ErevL - self.potential) #+ GbarK * Gk * (ErevK - self.potential)
 		self.potential += (Inet + 0.2 * ExpSlope * torch.exp((self.potential-Thr) / ExpSlope)) / VmC
 		ExpThr = 0.9
 		self.spike = self.potential > ExpThr
@@ -106,21 +119,29 @@ def addLayer(l):
 
 import matplotlib.pyplot as plt
 import matplotlib
+plts = [plt.subplot(2,2,1),plt.subplot(2,2,2),plt.subplot(2,2,3),plt.subplot(2,2,4)]
+prog1=[];prog2=[]
 
 
 l1=addLayer(Layer(5))
 l2=addLayer(Layer(6))
-l3=addLayer(Layer(6))
+#l3=addLayer(Layer(6))
 #l4=addLayer(Layer(5))
 connectAllToAll(l1,l2)
-connectAllToAll(l2,l3)
+#connectAllToAll(l2,l3)
 #l4.paths.append(Path(l3,l4))
-for i in range(1,50):
+for i in range(1,30):
 	l1.sentSpike = tensor([1,0,0,0,0])
 	for l in layers: l.gatherInputs()
+	for l in layers: l.layerInhibit()
 	for l in layers: l.update()
 	for l in layers: l.sendOutput()
-	print(l3.spike)
-	plt.imshow([l3.potential], interpolation='nearest', vmin=0, vmax=1)
-	plt.pause(0.1)
+	#print(l2.potential,l2.gInhibit[0])
+	plts[0].imshow([l2.potential], interpolation='nearest', vmin=0, vmax=1)
+	plts[1].imshow([l2.gInhibit], interpolation='nearest', vmin=0, vmax=1)
+	prog1.append(tensor(l2.spike)); plts[2].imshow(prog1, interpolation='nearest', vmin=0, vmax=1)
+	prog2.append(tensor(l2.gInhibit)); plts[3].imshow(prog2, interpolation='nearest', vmin=0, vmax=1)
+	plt.pause(1)
 #print(l2.paths[0].weight.to_dense())
+
+plt.show()
