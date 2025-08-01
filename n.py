@@ -7,18 +7,21 @@ GbarE = 1; GbarI = 1; GbarL = 0.2; GbarK = 1; ErevE = 1; ErevL = 0.3; ErevI = 0.
 VmC = 2.81; ExpSlope = 0.02
 Thr = 0.5
 GeDt = 1/5; GiDt = 1/7
+FFAvgDt = 1/50
+FB_weight = 1; FSTau = 1/6; GiOverallScaling = 1.1; FS0 = 0.1
+SSiTau = 50; SSfTau = 20; SSExtraFactor = 30
 
 class Path:
 	def __init__(self, sender, reciever):
 		self.sender = sender
 		self.reciever = reciever
-		self.gExciteSyn = torch.zeros(reciever.size)
+		self.gExciteRaw = torch.zeros(reciever.size)
 		# each neuron connects to many neurons
 		self.weight = None # shape (reciever.size, sender.size)
 	def gatherInputs(self):
 		gExciteRaw = (self.sender.sentSpike * self.weight).to_dense().sum(1)
-		self.gExciteSyn = self.gExciteSyn*(1-GeDt) + gExciteRaw
-		self.reciever.gExciteSyn += self.gExciteSyn
+		self.gExciteRaw = self.gExciteRaw*(1-GeDt) + gExciteRaw
+		self.reciever.gExciteRaw += self.gExciteRaw
 
 paths = []
 def connectAllToAll(sender, reciever):
@@ -29,11 +32,40 @@ def connectAllToAll(sender, reciever):
 	return p
 
 
+class Pools:
+	def __init__(self):
+		self.FFsRaw = 0
+		self.FBsRaw = 0
+		self.FFAverage = 0
+		self.FSi = 0
+		self.SSi = 0
+		self.SSf = 0
+	def inhibit(self, layer):
+		self.FFsRaw = layer.gExciteRaw.sum(0)
+		self.FBsRaw = layer.spike.sum(0)
+
+		FFs = self.FFsRaw/layer.size
+		FBs = self.FBsRaw/layer.size
+
+		self.FFAverage += FFAvgDt * (FFs - self.FFAverage)
+
+		# Fast spiking (FS) PV from FFs and FBs
+		self.FSi = FFs + FB_weight * FBs - self.FSi / FSTau
+		FSGi = GiOverallScaling * max(self.FSi - FS0, 0)
+
+		# Slow spiking (SS) SST from FBs only, with facilitation factor SSf
+		self.SSi += (self.SSf * FBs - self.SSi) / SSiTau
+		self.SSf += FBs * (1 - self.SSf) - self.SSf / SSfTau
+		SSGi = GiOverallScaling * SSExtraFactor * self.SSi
+
+		layer.gInhibit = FSGi + SSGi
+		
+
 class Layer:
 	def __init__(self, size: int):
 		self.size = size
 		self.paths = []
-		self.gExciteSyn = torch.zeros(size)
+		self.gExciteRaw = torch.zeros(size)
 		self.gInhibitSyn = torch.zeros(size)
 		self.gExcite = torch.zeros(size) # these reset every time
 		self.gInhibit = torch.zeros(size)
@@ -48,14 +80,14 @@ class Layer:
 	def gatherInputs(self):
 		# gather spikes init
 		#gExciteRaw = torch.zeros(self.size)
-		self.gExciteSyn.zero_() # todo: set to avg
+		self.gExciteRaw.zero_() # todo: set to avg
 		self.gInhibitSyn.zero_() # todo: set to avg
 
 		for path in self.paths:
 			assert path.reciever == self
 			path.gatherInputs()
 		#self.gExciteSyn += gExciteRaw
-		self.gExcite = self.gExciteSyn # todo: add external input to gExcite
+		self.gExcite = self.gExciteRaw # todo: add external input to gExcite
 		# todo: add noise to gExcite
 	def update(self):
 		# Vm is self.potential
