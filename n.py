@@ -1,5 +1,6 @@
 import torch
 from torch import tensor
+from time import sleep
 
 
 class Path:
@@ -7,7 +8,7 @@ class Path:
 		self.sender = sender
 		self.reciever = reciever
 		# each neuron connects to many neurons
-		self.weight = (torch.rand((reciever.size,sender.size)) * 0.1 + 0.4).to_sparse_coo()
+		self.weight = (torch.rand((reciever.size,sender.size)) * 0.1 + 1).to_sparse_coo()
 
 
 class Layer:
@@ -19,7 +20,7 @@ class Layer:
 		self.potential = torch.zeros(size)
 		self.spike = None
 		self.sentSpike = torch.zeros(size)
-	def gather(self):
+	def gatherInputs(self):
 		self.gExcite.zero_()
 		for path in self.paths:
 			assert path.reciever == self
@@ -34,14 +35,31 @@ class Layer:
 		ExpThr = 0.9
 		self.spike = self.potential > ExpThr
 		self.potential[self.spike] = 0
-	def send(self):
+	def sendOutput(self):
 		self.sentSpike = self.spike
 
+layers = []
+def addLayer(l):
+	layers.append(l)
+	return l
 
-l1=Layer(5)
-l2=Layer(6)
+import matplotlib.pyplot as plt
+import matplotlib
+
+
+l1=addLayer(Layer(5))
+l2=addLayer(Layer(6))
+l3=addLayer(Layer(6))
+l4=addLayer(Layer(5))
 l2.paths.append(Path(l1,l2))
-l1.sentSpike = tensor([1,0,0,0,0])
-l2.gather();l2.update()
-print(l2.gExcite)
-print(l2.paths[0].weight.to_dense())
+l3.paths.append(Path(l2,l3))
+l4.paths.append(Path(l3,l4))
+for i in range(1,50):
+	l1.sentSpike = tensor([1,0,0,0,0])
+	for l in layers: l.gatherInputs()
+	for l in layers: l.update()
+	for l in layers: l.sendOutput()
+	print(l4.potential)
+	plt.imshow([l3.potential], interpolation='nearest', vmin=0, vmax=1)
+	plt.pause(0.1)
+#print(l2.paths[0].weight.to_dense())
