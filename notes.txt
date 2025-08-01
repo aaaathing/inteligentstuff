@@ -1,0 +1,6 @@
+
+a=tensor([1,2,3,4,5,6,7,8]).unsqueeze(0).expand((2,-1))
+print(a)
+print(torch.gather(a, 1,tensor([[0,1,2],[5,6,7]])))
+
+print((torch.arange(10,22) * tensor([[1,1,0,0,0,0,1,0,0,0,1,1],[0,0,0,0,1,1,1,1,1,0,0,0]]).to_sparse_coo()).to_dense().sum(1))
