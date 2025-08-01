@@ -3,34 +3,63 @@ from torch import tensor
 from time import sleep
 
 
+GbarE = 1; GbarI = 1; GbarL = 0.2; GbarK = 1; ErevE = 1; ErevL = 0.3; ErevI = 0.1; ErevK = 0.1
+VmC = 2.81; ExpSlope = 0.02
+Thr = 0.5
+GeDt = 1/5; GiDt = 1/7
+
 class Path:
 	def __init__(self, sender, reciever):
 		self.sender = sender
 		self.reciever = reciever
+		self.gExciteSyn = torch.zeros(reciever.size)
 		# each neuron connects to many neurons
-		self.weight = (torch.rand((reciever.size,sender.size)) * 0.1 + 1).to_sparse_coo()
+		self.weight = None # shape (reciever.size, sender.size)
+	def gatherInputs(self):
+		gExciteRaw = (self.sender.sentSpike * self.weight).to_dense().sum(1)
+		self.gExciteSyn = self.gExciteSyn*(1-GeDt) + gExciteRaw
+		self.reciever.gExciteSyn += self.gExciteSyn
+
+paths = []
+def connectAllToAll(sender, reciever):
+	p = Path(sender,reciever)
+	p.weight = (torch.rand((reciever.size,sender.size)) * 0.1 + 0.4).to_sparse_coo()
+	reciever.paths.append(p)
+	paths.append(p)
+	return p
 
 
 class Layer:
 	def __init__(self, size: int):
 		self.size = size
 		self.paths = []
-		self.gExcite = torch.zeros(size)
+		self.gExciteSyn = torch.zeros(size)
+		self.gInhibitSyn = torch.zeros(size)
+		self.gExcite = torch.zeros(size) # these reset every time
 		self.gInhibit = torch.zeros(size)
 		self.potential = torch.zeros(size)
 		self.spike = None
 		self.sentSpike = torch.zeros(size)
+	"""def decay(self):
+		decayOfActivation = 0.2
+		self.gExciteSyn *= 1-decayOfActivation
+		self.gInhibitSyn *= 1-decayOfActivation
+		self.potential *= 1-decayOfActivation"""
 	def gatherInputs(self):
-		self.gExcite.zero_()
+		# gather spikes init
+		#gExciteRaw = torch.zeros(self.size)
+		self.gExciteSyn.zero_() # todo: set to avg
+		self.gInhibitSyn.zero_() # todo: set to avg
+
 		for path in self.paths:
 			assert path.reciever == self
-			self.gExcite += (path.sender.sentSpike * path.weight).to_dense().sum(1)
+			path.gatherInputs()
+		#self.gExciteSyn += gExciteRaw
+		self.gExcite = self.gExciteSyn # todo: add external input to gExcite
+		# todo: add noise to gExcite
 	def update(self):
 		# Vm is self.potential
-		GbarE = 1; GbarI = 1; GbarL = 0.2; GbarK = 1; ErevE = 1; ErevL = 0.3; ErevI = 0.1; ErevK = 0.1
 		Inet = GbarE * self.gExcite * (ErevE - self.potential) + GbarI * self.gInhibit * (ErevI - self.potential) + GbarL * (ErevL - self.potential) #+ GbarK * Gk * (ErevK - self.potential)
-		VmC = 2.81; ExpSlope = 0.02
-		Thr = 0.5
 		self.potential += (Inet + 0.2 * ExpSlope * torch.exp((self.potential-Thr) / ExpSlope)) / VmC
 		ExpThr = 0.9
 		self.spike = self.potential > ExpThr
@@ -50,16 +79,16 @@ import matplotlib
 l1=addLayer(Layer(5))
 l2=addLayer(Layer(6))
 l3=addLayer(Layer(6))
-l4=addLayer(Layer(5))
-l2.paths.append(Path(l1,l2))
-l3.paths.append(Path(l2,l3))
-l4.paths.append(Path(l3,l4))
+#l4=addLayer(Layer(5))
+connectAllToAll(l1,l2)
+connectAllToAll(l2,l3)
+#l4.paths.append(Path(l3,l4))
 for i in range(1,50):
 	l1.sentSpike = tensor([1,0,0,0,0])
 	for l in layers: l.gatherInputs()
 	for l in layers: l.update()
 	for l in layers: l.sendOutput()
-	print(l4.potential)
+	print(l3.spike)
 	plt.imshow([l3.potential], interpolation='nearest', vmin=0, vmax=1)
 	plt.pause(0.1)
 #print(l2.paths[0].weight.to_dense())
