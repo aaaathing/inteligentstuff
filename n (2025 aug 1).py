@@ -35,14 +35,15 @@ def connectAllToAll(sender, reciever):
 
 class Pools:
 	def __init__(self):
+		self.gInhibit = 0
+		
+	"""
 		self.FFsRaw = 0
 		self.FBsRaw = 0
 		self.FFAverage = 0
 		self.FSi = 0
 		self.SSi = 0
 		self.SSf = 0
-		self.gInhibit = None
-	
 	def inhibit(self, layer):
 		self.FFsRaw = layer.gExciteRaw.sum(0)
 		self.FBsRaw = layer.spike.sum(0)
@@ -64,7 +65,7 @@ class Pools:
 		print("ss",self.SSi,self.SSf,SSGi)
 
 		self.gInhibit = FSGi + SSGi
-	
+	"""
 		
 
 class Layer:
@@ -100,8 +101,9 @@ class Layer:
 		# todo: add noise to gExcite
 		self.gInhibit = self.gInhibitRaw
 	def layerInhibit(self):
-		self.pools.inhibit(self)
-		self.gInhibit += self.pools.gInhibit
+		pass
+		#self.pools.inhibit(self)
+		#self.gInhibit += self.pools.gInhibit
 	def update(self):
 		# Vm is self.potential
 		Inet = GbarE * self.gExcite * (ErevE - self.potential) - GbarI * self.gInhibit * (ErevI - self.potential) + GbarL * (ErevL - self.potential) #+ GbarK * Gk * (ErevK - self.potential)
@@ -137,10 +139,10 @@ for i in range(1,30):
 	for l in layers: l.update()
 	for l in layers: l.sendOutput()
 	#print(l2.potential,l2.gInhibit[0])
-	plts[0].imshow([l2.potential], interpolation='nearest', vmin=0, vmax=1)
+	plts[0].imshow([l2.gExcite], interpolation='nearest', vmin=0, vmax=1)
 	plts[1].imshow([l2.gInhibit], interpolation='nearest', vmin=0, vmax=1)
-	prog1.append(tensor(l2.spike)); plts[2].imshow(prog1, interpolation='nearest', vmin=0, vmax=1)
-	prog2.append(tensor(l2.gInhibit)); plts[3].imshow(prog2, interpolation='nearest', vmin=0, vmax=1)
+	prog1.append(tensor(l2.gExcite)); plts[2].imshow(prog1, interpolation='nearest', vmin=0, vmax=2)
+	prog2.append(tensor(l2.gInhibit)); plts[3].imshow(prog2, interpolation='nearest', vmin=0, vmax=2)
 	plt.pause(1)
 #print(l2.paths[0].weight.to_dense())
 
