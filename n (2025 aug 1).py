@@ -76,7 +76,10 @@ class Layer:
 		self.gInhibitRaw = torch.zeros(size)
 		self.gExcite = torch.zeros(size) # these reset every time
 		self.gInhibit = torch.zeros(size)
-		self.potential = torch.zeros(size)
+		self.potential = torch.full((size), -70)
+		self.sodium = torch.zeros(size)
+		self.potassium = torch.zeros(size)
+		self.sodiumChannelInactivation = torch.zeros(size)
 		self.spike = torch.zeros(size)
 		self.sentSpike = torch.zeros(size)
 		self.pools = Pools()
@@ -105,10 +108,28 @@ class Layer:
 		#self.pools.inhibit(self)
 		#self.gInhibit += self.pools.gInhibit
 	def update(self):
-		# Vm is self.potential
-		Inet = GbarE * self.gExcite * (ErevE - self.potential) - GbarI * self.gInhibit * (ErevI - self.potential) + GbarL * (ErevL - self.potential) #+ GbarK * Gk * (ErevK - self.potential)
-		self.potential += (Inet + 0.2 * ExpSlope * torch.exp((self.potential-Thr) / ExpSlope)) / VmC
-		ExpThr = 0.9
+		# Hodgkin-Huxley model
+		# Constants
+		Cm = 1.0  # Membrane capacitance in uF/cm^2
+		gNa = 120.0  # Sodium channel conductance in mS/cm^2
+		gK = 36.0  # Potassium channel conductance in mS/cm^2
+		gL = 0.3  # Leak conductance in mS/cm^2
+		ENa = 50.0  # Sodium reversal potential in mV
+		EK = -77.0  # Potassium reversal potential in mV
+		EL = -54.387  # Leak reversal potential in mV
+		I_ext = 10.0  # External current in uA/cm^2
+
+		I_Na = gNa*(self.sodiumChannelActivation**3)*self.sodiumChannelInactivation*(self.potential-ENa)
+		I_K = gK*(self.potassiumChannelActivation**4)*(self.potential-EK)
+		I_L = gL*(self.potential-EL)
+		self.potential += (I_ext - I_Na - I_K - I_L) / Cm
+
+		self.sodiumChannelActivation += (0.1*(self.potential+40)/(1-torch.exp(-(self.potential+40)/10)))*(1-self.sodiumChannelActivation) - (4.0*torch.exp(-(self.potential+65)/18))*self.sodiumChannelActivation
+
+		self.sodiumChannelInactivation += (0.07*torch.exp(-(self.potential+65)/20))*(1-self.sodiumChannelInactivation) - (1.0/(1+torch.exp(-(self.potential+35)/10)))*self.sodiumChannelInactivation
+
+		self.potassiumChannelActivation += (0.01*(self.potential+55)/(1-torch.exp(-(self.potential+55)/10)))*(1-self.potassiumChannelActivation) - (0.125*torch.exp(-(self.potential+65)/80))*self.potassiumChannelActivation
+
 		self.spike = self.potential > ExpThr
 		self.potential[self.spike] = 0
 	def sendOutput(self):
