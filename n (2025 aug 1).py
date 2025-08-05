@@ -72,66 +72,26 @@ class Layer:
 	def __init__(self, size: int):
 		self.size = size
 		self.paths = []
-		self.gExciteRaw = torch.zeros(size)
-		self.gInhibitRaw = torch.zeros(size)
-		self.gExcite = torch.zeros(size) # these reset every time
-		self.gInhibit = torch.zeros(size)
-		self.potential = torch.full((size), -70)
-		self.sodium = torch.zeros(size)
-		self.potassium = torch.zeros(size)
-		self.sodiumChannelInactivation = torch.zeros(size)
+		self.potential = torch.full((size,), -70.0) # in millivolts
+		self.refractoryTimer = torch.zeros(size)
 		self.spike = torch.zeros(size)
 		self.sentSpike = torch.zeros(size)
 		self.pools = Pools()
 
-	"""def decay(self):
-		decayOfActivation = 0.2
-		self.gExciteSyn *= 1-decayOfActivation
-		self.gInhibitRaw *= 1-decayOfActivation
-		self.potential *= 1-decayOfActivation
-	"""
 	def gatherInputs(self):
-		# gather spikes init
-		#gExciteRaw = torch.zeros(self.size)
-		self.gExciteRaw.zero_() # todo: set to avg
-		self.gInhibitRaw.zero_() # todo: set to avg
-
-		for path in self.paths:
-			assert path.reciever == self
-			path.gatherInputs()
-		#self.gExciteSyn += gExciteRaw
-		self.gExcite = self.gExciteRaw # todo: add external input to gExcite
-		# todo: add noise to gExcite
-		self.gInhibit = self.gInhibitRaw
+		pass
 	def layerInhibit(self):
 		pass
-		#self.pools.inhibit(self)
-		#self.gInhibit += self.pools.gInhibit
-	def update(self):
-		# Hodgkin-Huxley model
-		# Constants
-		Cm = 1.0  # Membrane capacitance in uF/cm^2
-		gNa = 120.0  # Sodium channel conductance in mS/cm^2
-		gK = 36.0  # Potassium channel conductance in mS/cm^2
-		gL = 0.3  # Leak conductance in mS/cm^2
-		ENa = 50.0  # Sodium reversal potential in mV
-		EK = -77.0  # Potassium reversal potential in mV
-		EL = -54.387  # Leak reversal potential in mV
-		I_ext = 10.0  # External current in uA/cm^2
-
-		I_Na = gNa*(self.sodiumChannelActivation**3)*self.sodiumChannelInactivation*(self.potential-ENa)
-		I_K = gK*(self.potassiumChannelActivation**4)*(self.potential-EK)
-		I_L = gL*(self.potential-EL)
-		self.potential += (I_ext - I_Na - I_K - I_L) / Cm
-
-		self.sodiumChannelActivation += (0.1*(self.potential+40)/(1-torch.exp(-(self.potential+40)/10)))*(1-self.sodiumChannelActivation) - (4.0*torch.exp(-(self.potential+65)/18))*self.sodiumChannelActivation
-
-		self.sodiumChannelInactivation += (0.07*torch.exp(-(self.potential+65)/20))*(1-self.sodiumChannelInactivation) - (1.0/(1+torch.exp(-(self.potential+35)/10)))*self.sodiumChannelInactivation
-
-		self.potassiumChannelActivation += (0.01*(self.potential+55)/(1-torch.exp(-(self.potential+55)/10)))*(1-self.potassiumChannelActivation) - (0.125*torch.exp(-(self.potential+65)/80))*self.potassiumChannelActivation
-
-		self.spike = self.potential > ExpThr
-		self.potential[self.spike] = 0
+	def update(self, inputs): # todo: inputs IS FOR TEMPORARYLY TESTING
+		# Integrate-and-fire model
+		self.refractoryTimer -= 1.0
+		self.refractoryTimer.clamp_min_(0)
+		sodiumChannelInactivation = 1-(self.refractoryTimer/3.5).clamp_max(1) # during refractory, at first, it is 0, but when refractoryTimer gets to 3.5, it gradually goes to 1
+		#sodiumChannelActivation = 10.0 * torch.exp((self.potential+70.0)/50.0)
+		self.potential += inputs * sodiumChannelInactivation - (self.potential + 70)*0.01
+		self.spike = self.potential > -65.0
+		self.potential[self.spike] = -70.0
+		self.refractoryTimer[self.spike] = 5.0
 	def sendOutput(self):
 		self.sentSpike = self.spike
 
@@ -147,23 +107,23 @@ prog1=[];prog2=[]
 
 
 l1=addLayer(Layer(5))
-l2=addLayer(Layer(6))
+#l2=addLayer(Layer(6))
 #l3=addLayer(Layer(6))
 #l4=addLayer(Layer(5))
-connectAllToAll(l1,l2)
+#connectAllToAll(l1,l2)
 #connectAllToAll(l2,l3)
 #l4.paths.append(Path(l3,l4))
 for i in range(1,30):
 	l1.sentSpike = tensor([1,0,0,0,0])
 	for l in layers: l.gatherInputs()
 	for l in layers: l.layerInhibit()
-	for l in layers: l.update()
+	for l in layers: l.update(float((i%5)==0))
 	for l in layers: l.sendOutput()
-	#print(l2.potential,l2.gInhibit[0])
-	plts[0].imshow([l2.gExcite], interpolation='nearest', vmin=0, vmax=1)
-	plts[1].imshow([l2.gInhibit], interpolation='nearest', vmin=0, vmax=1)
-	prog1.append(tensor(l2.gExcite)); plts[2].imshow(prog1, interpolation='nearest', vmin=0, vmax=2)
-	prog2.append(tensor(l2.gInhibit)); plts[3].imshow(prog2, interpolation='nearest', vmin=0, vmax=2)
+	#print(l1.potential)
+	plts[0].imshow([l1.potential], interpolation='nearest', vmin=-70, vmax=-65)
+	plts[1].imshow([l1.refractoryTimer], interpolation='nearest', vmin=0, vmax=1)
+	prog1.append(tensor(l1.potential)); plts[2].imshow(prog1, interpolation='nearest', vmin=-70, vmax=-65)
+	prog2.append(tensor(l1.refractoryTimer)); plts[3].imshow(prog2, interpolation='nearest', vmin=0, vmax=1)
 	plt.pause(1)
 #print(l2.paths[0].weight.to_dense())
 

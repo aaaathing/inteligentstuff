@@ -40,6 +40,13 @@ def dmdt(potential, sodiumActive): return alpha_m(potential)*(1-sodiumActive) - 
 def dhdt(potential, sodiumInactive): return alpha_h(potential)*(1-sodiumInactive) - beta_h(potential)*sodiumInactive
 def dndt(potential, potassiumActive): return alpha_n(potential)*(1-potassiumActive) - beta_n(potential)*potassiumActive
 
+"""
+x=np.linspace(-70,40,100)
+plt.plot(x, beta_m(x))
+plt.show()
+"""
+
+
 # Time-stepping loop
 V_trace, m_trace, h_trace, n_trace = [], [], [], []
 for time in t:
