@@ -16,6 +16,7 @@ class nlayer:
 		self.name = "layer"+str(layerid)
 		layerid+=1
 		self.w = {}
+		self.trace = {}
 		self.nextV = torch.zeros(flattenShape(shape))
 	def input(self, otherLayer):
 		if not otherLayer.name in self.w:
