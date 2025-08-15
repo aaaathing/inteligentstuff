@@ -1,8 +1,9 @@
 import torch
 from torch import tensor
-import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
+import parts
+import matplotlib.pyplot as plt
 
 
 goalProposer = nn.Sequential(
@@ -21,30 +22,7 @@ rewardPredictor = nn.Sequential(
 		nn.Linear(128, 1)
 )
 
-class LaterPredictingLayer:
-	def __init__(self, shape: int):
-		self.shape = shape
-		self.w = {}
-		self.senderTrace = {}
-		self.nextV = torch.zeros(shape)
-	def input(self, sender):
-		if not sender in self.w:
-			self.w[sender] = torch.rand((sender.shape,self.shape))*0.2+0.4
-		self.nextV += sender.v @ self.w[sender]
-	def inputTensor(self, t):
-		self.nextV += t.flatten()
-	def update(self, reward=0.0, lr=0.5, achLearningSignal = 0.0):
-		for sender in self.w:
-			if not sender in self.senderTrace:
-				self.senderTrace[sender] = torch.zeros((sender.shape))
-			self.senderTrace[sender] += sender.v * achLearningSignal
-			self.w[sender] += achLearningSignal * self.senderTrace[sender][:,None] * (self.nextV-self.v)[None,:] * lr
-			self.senderTrace[sender] *= max(1.0-achLearningSignal, 0.0)
-		self.v = self.nextV
-		self.nextV = torch.zeros(self.shape)
-		return self.v
-
-outcomePredictor = LaterPredictingLayer(4)
+outcomePredictor = parts.OutcomePredictingLayer(4)
 # todo: go and nogo in vbg (final decider)
 
 
@@ -52,6 +30,9 @@ fig, axs = plt.subplots(1, 2)
 
 for i in range(10):
 		state = tensor([1.0, 0.0, 0.0, 0.0])
+
+		outcomePredictor.preupdate()
+
 		action_probs = goalProposer(state)
 		action = torch.multinomial(action_probs, 1)
 		
