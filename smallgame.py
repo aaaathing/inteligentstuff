@@ -30,7 +30,29 @@ class game:
 		ax.imshow(self.video)
 
 def example():
-	g=game()
+	g=clickergame()
 	for i in range(100):
-		g.step(random.uniform(-1,1),random.uniform(-1,1))
+		g.step(random.uniform(-1,1))
 		plt.pause(0.1)
+
+class clickergame:
+	def __init__(self):
+		self.cooldown = 0
+		self.reward = 0
+		self.video = np.zeros((1,6,3))
+
+	def step(self,action):
+		if self.cooldown>0:
+			self.cooldown -= 1
+			self.reward = 0
+		else:
+			if action>0.5:
+				self.reward = 1
+				self.cooldown = 5
+			else:
+				self.reward = 0
+
+		self.video = np.zeros((1,6,3))
+		self.video[0,self.cooldown] = [1,1,1]
+
+		ax.imshow(self.video)
