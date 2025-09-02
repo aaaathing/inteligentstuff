@@ -16,8 +16,7 @@ yesLayer = parts.DecideLayer(4)
 noLayer = parts.DecideLayer(4)
 actionLayer = parts.DecideLayer(4)
 
-
-fig, axs = plt.subplots(1, 2)
+fig, axs = plt.subplots(2, 3)
 
 for i in range(10):
 		learningSignal = 0.0
@@ -26,7 +25,7 @@ for i in range(10):
 		if game.video[0,0,0].item()>0.5: # this is temporary, will be removed later
 			learningSignal = 1.0
 
-		stateLayer.inputTensor(game.video.flatten())
+		stateLayer.inputTensor(tensor(game.video.flatten(), dtype=float))
 		stateLayer.update()
 		
 		positiveOutcomePredictor.input(stateLayer)
@@ -34,6 +33,8 @@ for i in range(10):
 
 		positiveOutcomePredictor.update(hasReward=game.reward, achLearningSignal=learningSignal)
 		negativeOutcomePredictor.update(hasReward=game.reward, achLearningSignal=learningSignal)
+
+		print(positiveOutcomePredictor.prevV,positiveOutcomePredictor.senderTrace)
 
 		yesLayer.input(positiveOutcomePredictor)
 		noLayer.input(negativeOutcomePredictor)
@@ -46,7 +47,9 @@ for i in range(10):
 
 		game.step(actionLayer.v[0].item())
 
-		axs[0].imshow(actionLayer.v, interpolation='nearest', vmin=0,vmax=1)
-		axs[1].clear()
-		axs[1].text(0.4,0.4, f"learningSignal: {learningSignal} \nreward: {game.reward}")
+		axs[0,0].clear()
+		axs[0,0].text(0.4,0.4, f"learningSignal: {learningSignal} \nreward: {game.reward}")
+		axs[1,0].imshow([positiveOutcomePredictor.prevV], vmin=0,vmax=1); axs[1,0].set_title("positiveOutcomePredictor")
+		axs[1,1].imshow([yesLayer.prevV], vmin=0,vmax=1); axs[1,1].set_title("yesLayer")
+		axs[1,2].imshow([actionLayer.prevV], vmin=0,vmax=1); axs[1,2].set_title("actionLayer")
 		plt.pause(1)
