@@ -44,7 +44,10 @@ class clickergame:
 	def step(self,action):
 		if self.cooldown>0:
 			self.cooldown -= 1
-			self.reward = 0
+			if action>0.5:
+				self.reward = -1
+			else:
+				self.reward = 0
 		else:
 			if action>0.5:
 				self.reward = 1

@@ -1,32 +1,45 @@
 import torch
 from torch import tensor
 
+def initWeights(shape):
+	#match initWeights:
+	#	case "zero":
+	#		return torch.rand()*0.1
+	#	case "random":
+			return torch.rand(shape)*0.2+0.4
+		
 class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
-		self.inputAmount = torch.zeros(shape)
+		self.inputExcitatory = torch.zeros(shape)
 		self.v = torch.zeros(shape)
 		self.prevV = torch.zeros(shape)
 		self.w = {}
 		self.inhibition = torch.zeros(shape)
-	def input(self, sender, inhibit=False):
+
+	def input(self, sender, inhibit=False, bidirectional=True):
 		if not sender in self.w:
-			self.w[sender] = torch.rand((sender.shape,self.shape))*0.2+0.4
+			self.w[sender] = initWeights((sender.shape,self.shape))
 		if inhibit:
-			self.inputAmount -= sender.v @ self.w[sender]
+			self.inputExcitatory -= sender.v @ self.w[sender]
 		else:
-			self.inputAmount += sender.v @ self.w[sender]
+			self.inputExcitatory += sender.v @ self.w[sender]
+			if bidirectional:
+				sender.inputExcitatory += (self.v @ self.w[sender].t())
+
 	def inputTensor(self, t):
-		self.inputAmount += t.flatten()
+		self.inputExcitatory += t.flatten()
 	def updateInhibit(self):
 		# self.inhibition.lerp_((self.inputAmount.mean()+self.inputAmount.max())/2.0, 0.5)
 		self.inhibition.lerp_((self.prevV.mean()+self.prevV.max())/2.0, 0.5)
+
 	def updateV(self):
 		self.prevV = self.v
 		self.updateInhibit()
-		self.v = self.inputAmount - self.inhibition
-		self.v = self.v.clamp_min(0.0)
-		self.inputAmount = torch.zeros(self.shape)
+		netInput = self.inputExcitatory - self.inhibition
+		self.v += (netInput - self.v) * 0.5
+		self.v = torch.tanh(self.v.clamp_min(0.0))
+		self.inputExcitatory = torch.zeros(self.shape)
 	def update(self):
 		self.updateV()
 

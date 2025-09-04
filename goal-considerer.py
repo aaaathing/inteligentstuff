@@ -18,7 +18,7 @@ actionLayer = parts.DecideLayer(4)
 
 fig, axs = plt.subplots(2, 3)
 
-for i in range(10):
+for i in range(100):
 		learningSignal = 0.0
 		learningSignal += game.reward
 
@@ -39,7 +39,7 @@ for i in range(10):
 		yesLayer.input(positiveOutcomePredictor)
 		noLayer.input(negativeOutcomePredictor)
 		actionLayer.input(yesLayer)
-		actionLayer.input(noLayer, inhibit=True)
+		#actionLayer.input(noLayer, inhibit=True)
 
 		yesLayer.update(hasReward=game.reward)
 		noLayer.update(hasReward=game.reward)
