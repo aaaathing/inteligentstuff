@@ -12,10 +12,11 @@ class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
 		self.inputExcitatory = torch.zeros(shape)
+		self.inputInhibition = torch.zeros(shape)
 		self.v = torch.zeros(shape)
 		self.prevV = torch.zeros(shape)
 		self.w = {}
-		self.inhibition = torch.zeros(shape)
+		self.feedbackInhibition = torch.zeros(shape)
 
 	def input(self, sender, inhibit=False, bidirectional=True):
 		if not sender in self.w:
@@ -31,15 +32,18 @@ class Layer:
 		self.inputExcitatory += t.flatten()
 	def updateInhibit(self):
 		# self.inhibition.lerp_((self.inputAmount.mean()+self.inputAmount.max())/2.0, 0.5)
-		self.inhibition.lerp_((self.prevV.mean()+self.prevV.max())/2.0, 0.5)
+		feedforwardInhibition = max((self.inputExcitatory.mean()+self.inputExcitatory.max())/2.0 - 1.0, 0.0) # if input is more than 1, start inhibiting it
+		self.feedbackInhibition.lerp_(self.prevV.mean(), 0.5)
+		self.inputInhibition += feedforwardInhibition + feedforwardInhibition
 
 	def updateV(self):
 		self.prevV = self.v
 		self.updateInhibit()
-		netInput = self.inputExcitatory - self.inhibition
+		netInput = self.inputExcitatory - self.inputInhibition
 		self.v += (netInput - self.v) * 0.5
 		self.v = torch.tanh(self.v.clamp_min(0.0))
 		self.inputExcitatory = torch.zeros(self.shape)
+		self.inputInhibition = torch.zeros(self.shape)
 	def update(self):
 		self.updateV()
 

@@ -30,6 +30,8 @@ for i in range(100):
 		
 		lr = 0.5 if i<30 else 0
 
+		newCycle = (i%10) == 0
+
 		stateLayer.inputTensor(tensor(game.video.flatten(), dtype=float))
 		stateLayer.update()
 		
@@ -45,25 +47,27 @@ for i in range(100):
 		gatingInhibit = max(1.0-gatingWindowLayer.totalReleased, 0.0)*10.0
 
 		yesLayer.input(positiveOutcomePredictor)
-		yesLayer.inhibition += gatingInhibit
+		yesLayer.inputInhibition += gatingInhibit
 		noLayer.input(negativeOutcomePredictor)
-		noLayer.inhibition += gatingInhibit
+		noLayer.inputInhibition += gatingInhibit
 		actionLayer.input(yesLayer)
-		actionLayer.inhibition += gatingInhibit
+		actionLayer.inputInhibition += gatingInhibit
 		#actionLayer.input(noLayer, inhibit=True)
 
 		yesLayer.update(hasReward=game.reward)
 		noLayer.update(hasReward=game.reward)
 		actionLayer.update(hasReward=game.reward)
 
-		if actionLayer.v.max() > 0.5:
-			gatingWindowLayer.reset()
+		if newCycle:
+			if actionLayer.v.max() > 0.5:
+				gatingWindowLayer.reset()
 
-		game.step(actionLayer.v[0].item())
+			game.step(actionLayer.v[0].item())
 
 		axs[0,0].clear()
 		axs[0,0].text(0.1,0.1, f"learningSignal: {learningSignal} \nreward: {game.reward} \ntotalReleased: {gatingWindowLayer.totalReleased}")
+		axs[0,1].imshow([stateLayer.prevV], vmin=0,vmax=1); axs[1,0].set_title("stateLayer")
 		axs[1,0].imshow([positiveOutcomePredictor.prevV], vmin=0,vmax=1); axs[1,0].set_title("positiveOutcomePredictor")
 		axs[1,1].imshow([yesLayer.prevV], vmin=0,vmax=1); axs[1,1].set_title("yesLayer")
 		axs[1,2].imshow([actionLayer.prevV], vmin=0,vmax=1); axs[1,2].set_title("actionLayer")
-		plt.pause(1)
+		plt.pause(0.1)

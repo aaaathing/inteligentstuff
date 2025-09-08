@@ -45,7 +45,7 @@ class clickergame:
 		if self.cooldown>0:
 			self.cooldown -= 1
 			if action>0.5:
-				self.reward = -1
+				self.reward = 0 # -1
 			else:
 				self.reward = 0
 		else:
