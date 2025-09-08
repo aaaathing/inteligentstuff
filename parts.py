@@ -121,3 +121,21 @@ class DecideLayer(Layer):
 			if hasReward:
 				self.w[sender] += self.senderTrace[sender][:,None] * self.trace[None,:] * lr
 				self.senderTrace[sender].zero_()
+
+class GatingWindowLayer:
+	def __init__(self):
+		self.store = {}
+		self.released = {}
+	def update(self, inputs):
+		self.totalReleased = 0
+		for i in inputs:
+			if not i in self.store:
+				self.store[i] = torch.ones(i.shape)
+				self.released[i] = torch.zeros(i.shape)
+			self.store[i] += 0.05
+			self.released[i][i.v > 0.5] = torch.max(self.store[i][i.v > 0.5],self.released[i][i.v > 0.5])
+			self.store[i][i.v > 0.5] = 0
+			self.totalReleased += self.released[i].sum()
+	def reset(self):
+		for i in self.released:
+			self.released[i].zero_()
