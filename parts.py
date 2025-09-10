@@ -34,7 +34,7 @@ class Layer:
 		# self.inhibition.lerp_((self.inputAmount.mean()+self.inputAmount.max())/2.0, 0.5)
 		feedforwardInhibition = max((self.inputExcitatory.mean()+self.inputExcitatory.max())/2.0 - 1.0, 0.0) # if input is more than 1, start inhibiting it
 		self.feedbackInhibition.lerp_(self.prevV.mean(), 0.5)
-		self.inputInhibition += feedforwardInhibition + feedforwardInhibition
+		self.inputInhibition += feedforwardInhibition + self.feedbackInhibition
 
 	def updateV(self):
 		self.prevV = self.v
