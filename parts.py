@@ -17,6 +17,7 @@ class Layer:
 		self.prevV = torch.zeros(shape)
 		self.w = {}
 		self.feedbackInhibition = torch.zeros(shape)
+		self.constantV = None
 
 	def input(self, sender, inhibit=False, bidirectional=True):
 		if not sender in self.w:
@@ -39,9 +40,12 @@ class Layer:
 	def updateV(self):
 		self.prevV = self.v
 		self.updateInhibit()
-		netInput = self.inputExcitatory - self.inputInhibition
-		self.v += (netInput - self.v) * 0.5
-		self.v = torch.tanh(self.v.clamp_min(0.0))
+		if self.constantV is not None:
+			self.v.copy_(self.constantV)
+		else:
+			netInput = self.inputExcitatory - self.inputInhibition
+			self.v = netInput # += (netInput - self.v) * 0.5
+			self.v = torch.tanh(self.v.clamp_min(0.0))
 		self.inputExcitatory = torch.zeros(self.shape)
 		self.inputInhibition = torch.zeros(self.shape)
 	def update(self):
