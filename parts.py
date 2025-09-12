@@ -44,7 +44,7 @@ class Layer:
 			self.v.copy_(self.constantV)
 		else:
 			netInput = self.inputExcitatory - self.inputInhibition
-			self.v = netInput # += (netInput - self.v) * 0.5
+			self.v += (netInput - self.v) * 0.5
 			self.v = torch.tanh(self.v.clamp_min(0.0))
 		self.inputExcitatory = torch.zeros(self.shape)
 		self.inputInhibition = torch.zeros(self.shape)
