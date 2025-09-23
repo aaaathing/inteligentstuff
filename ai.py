@@ -22,13 +22,14 @@ actionLayer = parts.DecideLayer(4)
 fig, axs = plt.subplots(3, 3)
 
 def updateLayers(alphaCycleProgress, whatwhere):
+	parts.alphaCycleProgress = alphaCycleProgress
 	learningSignal = 0.0
 	learningSignal += env.reward
 
 	#if env.video[0,0,0].item()>0.5: # this is temporary, will be removed later
 	#	learningSignal = 1.0
 	
-	lr = 0.5
+	parts.lr = 0.5
 
 	whatInputLayer.inputTensor(whatwhere[0])
 	whereInputLayer.inputTensor(whatwhere[1])
@@ -61,26 +62,26 @@ def updateLayers(alphaCycleProgress, whatwhere):
 	actionLayer.update(hasReward=env.reward)
 
 	if alphaCycleProgress["end"]:
-		if actionLayer.v.max() > 0.5:
+		if actionLayer.output.max() > 0.5:
 			gatingWindowLayer.reset()
 	
 	axs[1,0].clear()
 	axs[1,0].text(0.1,0.1, f"learningSignal: {learningSignal} \nreward: {env.reward} \ntotalReleased: {gatingWindowLayer.totalReleased}")
 	axs[0,0].imshow(env.video.reshape(224,224,4)); axs[0,0].set_title("video")
-	axs[0,1].imshow(whatInputLayer.prevV.view(12,16), vmin=0,vmax=1); axs[0,1].set_title("whatInputLayer")
-	axs[0,2].imshow(whereInputLayer.prevV.view(28,28), vmin=0,vmax=1); axs[0,2].set_title("whereInputLayer")
-	axs[2,0].imshow([positiveOutcomePredictor.prevV], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
-	axs[2,1].imshow([yesLayer.prevV], vmin=0,vmax=1); axs[2,1].set_title("yesLayer")
-	axs[2,2].imshow([actionLayer.prevV], vmin=0,vmax=1); axs[2,2].set_title("actionLayer")
+	axs[0,1].imshow(whatInputLayer.output.view(12,16), vmin=0,vmax=1); axs[0,1].set_title("whatInputLayer")
+	axs[0,2].imshow(whereInputLayer.output.view(28,28), vmin=0,vmax=1); axs[0,2].set_title("whereInputLayer")
+	axs[2,0].imshow([positiveOutcomePredictor.output], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
+	axs[2,1].imshow([yesLayer.output], vmin=0,vmax=1); axs[2,1].set_title("yesLayer")
+	axs[2,2].imshow([actionLayer.output], vmin=0,vmax=1); axs[2,2].set_title("actionLayer")
 	plt.pause(0.1)
 
 
 async def ailoop():
 	for i in range(100):
-		await env.step(actionLayer.v)
+		await env.step(actionLayer.output)
 
 		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)[:,:,0:3].permute(2,0,1)
-		whatwhere = absvit.run(video, whatInputLayer.v, whereInputLayer.v)
+		whatwhere = absvit.run(video, whatInputLayer.output, whereInputLayer.output)
 
 		for j in range(10):
 			updateLayers({"end":j==9}, whatwhere)

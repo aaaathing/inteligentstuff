@@ -41,14 +41,6 @@ class Env:
 
 env = Env()
 
-# example
-if False:
-	import matplotlib.pyplot as plt
-	async def loop():
-		for i in range(100):
-			await env.step([12,34])
-			# do computation here
-			if env.video is not None:
-				plt.imshow(env.video.reshape((128,128,4)))
-			plt.pause(0.2)
-	asyncio.run(env.run(loop))
+
+import socket
+print("Local address:", *socket.gethostbyname_ex(socket.gethostname()))

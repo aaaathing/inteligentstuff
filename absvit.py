@@ -38,7 +38,6 @@ if False:
 	input = getImage("Downloads/Screenshot 2025-04-10 10.50.49 AM.jpg")
 
 # %%
-#import matplotlib.pyplot as plt
 #def forward(input, channel_attention, spatial_attention):
 #	x, _, out_var = model.forward_features(input)
 #	for c in torch.linalg.vector_norm(x[0],dim=0).topk(10).indices:
@@ -82,7 +81,8 @@ if False:
 
 @torch.no_grad
 def run(input, channel_attention=None, spatial_attention=None):
-	input = input[None,...]
+	if len(input) == 3:
+		input = input[None,...]
 	x, _, _ = model.forward_features(input)
 	
 	if channel_attention is not None and spatial_attention is not None:
@@ -98,6 +98,11 @@ def run(input, channel_attention=None, spatial_attention=None):
 	)
 
 # %%
-
-# plt.imshow(sa.view(28,28).detach())
-# plt.imshow(ca.view(12,16).detach())
+if False:
+	#%%
+	import matplotlib.pyplot as plt
+	(ca,sa) = run(input)
+	fig, axs = plt.subplots(2)
+	axs[0].imshow(sa.view(28,28).detach())
+	axs[1].imshow(ca.view(12,16).detach())
+# %%
