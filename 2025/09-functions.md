@@ -15,6 +15,11 @@
 * when recalled, episodic memories reactivate other parts of neocortex
 * also activates semantic memories
 
+# recent memory
+memory of what happened recently in last few seconds.  
+* for: understanding words in context of previous words
+* remembering what happened after not paying attention
+
 # pfc
 * different areas that maintain different information, like:
 	* semantic information
@@ -23,17 +28,29 @@
 	* evaluating semantic information, based on current goals and stuff
 	* find relation between objects
 
+# motor cortex
+* does sequences of movements when bg gates
+* at first, bg decides each movement in a sequence, and motor cortex learns it (when sleeping)
+* prepares the movements to be done
+
 
 # how it goes together
 on Sep 6, 2025, i was at el carmelo and thinking about adding a layer that detect relations and a layer that recalls memories and pfc layers.
 
-first, there is video input. the first visual layer processes it into lines and edges. the next visual layers processes it into higher level things.
+first, there is video input
+* the first visual layer processes it into lines and edges.
+* the next visual layers processes it into higher level things.
+* and so on.
 
 then, there is a layer that recieves the processed visual input and other inputs, and it combines them into a representation of a semantic thing.
 
-the bg can gate and store information from visual and semantic layers in the pfc.
+the bg can gate
+* it can tell pfc to store information from other layers.
+* it can tell motor cortex to do movements.
 
-the maintained representation in the pfc can also activate representations in visual and semantic layers.
+the maintained representation in the pfc can also:
+* activate representations in visual and semantic layers.
+* activate representations in motor cortex to prepare movements.
 
 the episodic memory can match information from visual and semantic layers (including activations from pfc) to some memories and activate the visual and semantic layers with the memories.
 
