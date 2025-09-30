@@ -28,8 +28,8 @@
 		if(p){
 			if(msg.action[0] || msg.action[1]){
 				document.dispatchEvent(new MouseEvent('mousemove', {
-					movementX: (msg.action[0]-msg.action[1])*0.1,
-					movementY: (msg.action[2]-msg.action[3])*0.1,
+					movementX: (msg.action[0]-msg.action[1])*30,
+					movementY: (msg.action[2]-msg.action[3])*30,
 				}))
 			}
 

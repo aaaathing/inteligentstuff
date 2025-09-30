@@ -14,13 +14,13 @@ class vars:
 	traceDecay = 0.1
 
 
-def initWeights(shape):
+def initWeights(shapeA, shapeB):
 	#match initWeights:
 	#	case "zero":
 	#		return torch.rand()*0.1
 	#	case "random":
-			return torch.rand(shape)*0.2+0.4
-		
+			return torch.rand((shapeA,shapeB))*0.2+0.4
+
 class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
@@ -30,18 +30,21 @@ class Layer:
 		self.output = torch.zeros(shape)
 		self.prevOutput = torch.zeros(shape)
 		self.w = {}
+		self.senderInhibit = {} # which senders inhibit
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
 	def input(self, sender, inhibit=False, bidirectional=True):
 		if not sender in self.w:
-			self.w[sender] = initWeights((sender.shape,self.shape))
+			self.w[sender] = initWeights(sender.shape,self.shape)
+		self.senderInhibit[sender] = inhibit
+		
 		if inhibit:
 			self.inputExcitatory -= sender.output @ self.w[sender]
 		else:
 			self.inputExcitatory += sender.output @ self.w[sender]
 			if bidirectional:
-				sender.inputExcitatory += (self.output @ self.w[sender].t())
+				sender.inputExcitatory += (self.output @ self.w[sender].t())*0.5
 
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
@@ -69,7 +72,9 @@ def phaseLearn(self):
 		self.outputMinusPhase = self.output.clone()
 	if vars.alphaCycleProgress["end"]:
 		for sender in self.w:
-			self.w[sender] += (self.output-self.outputMinusPhase)[None,:] * sender.output[:,None] * 0.1
+			senderOutput = sender.output
+			if self.senderInhibit[sender]: senderOutput = -senderOutput
+			self.w[sender] += (self.output-self.outputMinusPhase)[None,:] * senderOutput[:,None] * vars.lr
 			self.w[sender].clamp_(0.0,1.0)
 def traceRewardLearn(self):
 	if vars.alphaCycleProgress["end"]:
@@ -78,7 +83,9 @@ def traceRewardLearn(self):
 		for sender in self.w:
 			if not sender in self.trace:
 				self.trace[sender] = torch.zeros((sender.shape,self.shape))
-			self.trace[sender] += (sender.output[:,None] * self.output[None,:] - self.trace[sender]) * vars.traceDecay
+			senderOutput = sender.output
+			if self.senderInhibit[sender]: senderOutput = -senderOutput
+			self.trace[sender] += (senderOutput[:,None] * self.output[None,:] - self.trace[sender]) * vars.traceDecay
 			if vars.hasReward:
 				self.w[sender] += self.trace[sender] * vars.hasReward * vars.lr
 
@@ -193,9 +200,19 @@ def updateLayers(whatwhere):
 	m1.layer.input(whatInputLayer)
 	m1.layer.input(whereInputLayer)
 	m1.update(actionLayer_m1)
-	
+
+
+fig, axs = plt.subplots(4, 3)
+def plotAt(x,y, v, title):
+	if len(axs[x,y].images):
+		axs[x,y].images[0].set_data(v)
+	else:
+		axs[x,y].imshow(v, vmin=0,vmax=1)
+	axs[x,y].set_title(title)
+
+def plotThem():
 	axs[1,0].clear()
-	axs[1,0].text(0.1,0.1, f"learningSignal: {learningSignal} \nreward: {env.reward}")
+	axs[1,0].text(0.1,0.1, f"reward: {env.reward}")
 	plotAt(0,0, env.video.reshape(224,224,4), "video")
 	plotAt(0,1, whatInputLayer.output.view(12,16), "whatInputLayer")
 	plotAt(0,2, whereInputLayer.output.view(28,28), "whereInputLayer")
@@ -204,31 +221,29 @@ def updateLayers(whatwhere):
 	plotAt(2,2, [actionLayer_m1.output], "actionLayer_m1")
 	plotAt(3,0, [m1.layer.output], "m1")
 	plt.pause(0.1)
-
-fig, axs = plt.subplots(4, 3)
-def plotAt(x,y, v, title):
-	axs[x,y].imshow(v, vmin=0,vmax=1)
-	axs[x,y].set_title(title)
 	
 
 
 async def ailoop():
-	for i in range(100):
+	for i in range(10000):
 		await env.step(m1.layer.output)
 		vars.hasReward = env.reward
 
-		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)[:,:,0:3].permute(2,0,1)
-		whatwhere = absvit.run(video, whatInputLayer.output, whereInputLayer.output)
+		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)
+		whatwhere = absvit.run(video[:,:,0:3].permute(2,0,1), whatInputLayer.output, whereInputLayer.output)
+		#whatwhere[1] *= video[:,:,3].view(784,1) # ignore transparent parts
 
 		for j in range(10):
 			vars.alphaCycleProgress = {"minusPhaseEnd": j==9, "end":False, "plusPhase":False}
 			updateLayers(whatwhere)
 
+		plotThem()
+
 		for j in range(10):
 			vars.alphaCycleProgress = {"minusPhaseEnd": False, "end":j==9, "plusPhase":False}
 			updateLayers(whatwhere)
 
-		plt.pause(5)
+		plotThem()
 
 
 

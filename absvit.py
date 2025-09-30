@@ -79,6 +79,14 @@ if False:
 #forward(input)
 # %%
 
+def rescale(x):
+	min = x.min()
+	max = x.max()
+	return x.clamp(0)/max if max>0 else x.clamp(0)
+	#if min == max:
+	#	max = max+1
+	#return (x - min) / (max - min)
+
 @torch.no_grad
 def run(input, channel_attention=None, spatial_attention=None):
 	if len(input) == 3:
@@ -90,7 +98,8 @@ def run(input, channel_attention=None, spatial_attention=None):
 		x = x * channel_attention[None,None,:] * spatial_attention[None,:,None]
 		td = model.feedback(x)
 
-		x, _, _ = model.forward_features(input, td)
+		x2, _, _ = model.forward_features(input, td)
+		x = (x+x2)/2.0 #(rescale(x)+rescale(x2))/2.0
 
 	return (
 		torch.linalg.vector_norm(x[0], dim=0),
@@ -101,7 +110,9 @@ def run(input, channel_attention=None, spatial_attention=None):
 if False:
 	#%%
 	import matplotlib.pyplot as plt
-	(ca,sa) = run(input)
+	(ca,sa) = run(input,ca,sa)
+	ca=torch.tanh(ca)
+	sa=torch.tanh(sa)
 	fig, axs = plt.subplots(2)
 	axs[0].imshow(sa.view(28,28).detach())
 	axs[1].imshow(ca.view(12,16).detach())
