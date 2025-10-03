@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import absvit
 
+# © thingmaker (http://github.com/aaaathing)
+# if you copy, explain that the code is from here
 
 # variables that can be changed
 class vars:
@@ -14,18 +16,21 @@ class vars:
 	traceDecay = 0.1
 
 
-def initWeights(shapeA, shapeB):
-	#match initWeights:
-	#	case "zero":
-	#		return torch.rand()*0.1
-	#	case "random":
-			return torch.rand((shapeA,shapeB))*0.2+0.4
+def initWeights(self, sender, howInitWeights="random"):
+	match howInitWeights:
+		case "weak":
+			return torch.full((sender.shape,self.shape), 0.1)
+		case "random" | None:
+			return torch.rand((sender.shape,self.shape))*0.2+0.4
+		case "zero":
+			return torch.zeros((sender.shape,self.shape))
 
 class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
 		self.inputExcitatory = torch.zeros(shape)
 		self.inputInhibition = torch.zeros(shape)
+		#self.inputCount = 0.0
 		self.v = torch.zeros(shape)
 		self.output = torch.zeros(shape)
 		self.prevOutput = torch.zeros(shape)
@@ -34,17 +39,23 @@ class Layer:
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
-	def input(self, sender, inhibit=False, bidirectional=True):
+	def rescale(self, thisInput, rescaleTo):
+		m = thisInput.mean()
+		if m>rescaleTo: thisInput /= m/rescaleTo
+		return thisInput
+
+	def input(self, sender, inhibit=False, bidirectional=True, rescaleTo=1.0, howInitWeights=None):
 		if not sender in self.w:
-			self.w[sender] = initWeights(sender.shape,self.shape)
+			self.w[sender] = initWeights(self, sender, howInitWeights=howInitWeights)
 		self.senderInhibit[sender] = inhibit
-		
+
 		if inhibit:
-			self.inputExcitatory -= sender.output @ self.w[sender]
+			self.inputExcitatory -= self.rescale(sender.output @ self.w[sender], rescaleTo=rescaleTo)
 		else:
-			self.inputExcitatory += sender.output @ self.w[sender]
+			self.inputExcitatory += self.rescale(sender.output @ self.w[sender], rescaleTo=rescaleTo)
+			#self.inputCount += rescaleTo
 			if bidirectional:
-				sender.inputExcitatory += (self.output @ self.w[sender].t())*0.5
+				sender.inputExcitatory += self.rescale(self.output @ self.w[sender].t(), rescaleTo=rescaleTo*0.2)
 
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
@@ -55,6 +66,7 @@ class Layer:
 
 	def updateV(self):
 		self.prevOutput = self.output
+		#if self.inputCount != 0.0: self.inputExcitatory /= self.inputCount
 		self.updateInhibit()
 		if self.constantOutput is not None:
 			self.output.copy_(self.constantOutput)
@@ -62,8 +74,11 @@ class Layer:
 			netInput = self.inputExcitatory - self.inputInhibition
 			self.v += (netInput - self.v) * 0.5
 			self.output = torch.tanh(2.0*self.v.clamp_min(0.0))
+		self.prevInputExcitatory = self.inputExcitatory
+		self.prevInputInhibition = self.inputInhibition
 		self.inputExcitatory = torch.zeros(self.shape)
 		self.inputInhibition = torch.zeros(self.shape)
+		self.inputCount = 0.0
 	def update(self):
 		self.updateV()
 
@@ -125,6 +140,31 @@ class DeeppredLayers:
 		if vars.alphaCycleProgress["end"]:
 			self.c.constantOutput = self.s.output.clone()
 
+class RewardPredLayers(): #todo: finish
+	def __init__(self, shape):
+		self.acq = Layer(shape)
+		self.acq.senderTrace = {}
+		#self.ext = Layer(shape)
+	def update(self, daSign=1.0):
+		self.acq.update()
+		#self.ext.update()
+		if vars.hasReward:
+			self.acq.inputExcitatory += max(vars.hasReward*daSign,0.0)
+			#self.ext.inputExcitatory += -max(vars.hasReward*daSign,0.0)
+		if vars.alphaCycleProgress["end"]:
+			self.acq.prevOutput = self.acq.output.clone()
+			#self.ext.prevOutput = self.ext.output.clone()
+		for sender in self.acq.w:
+			if not sender in self.acq.senderTrace:
+				self.acq.senderTrace[sender] = torch.zeros((sender.shape,))
+			senderOutput = sender.output
+			if self.acq.senderInhibit[sender]: senderOutput = -senderOutput
+			self.acq.senderTrace[sender] += (senderOutput - self.acq.senderTrace[sender]) * vars.traceDecay
+			if vars.hasReward:
+				self.acq.w[sender] += abs(vars.hasReward) * self.acq.senderTrace[sender][:,None] * (self.acq.output * (self.acq.prevOutput-self.acq.output))[None,:] * vars.lr
+				self.acq.senderTrace[sender] *= min(1.0 - abs(vars.hasReward), 0.0)
+			self.acq.w[sender].clamp_(0.0,1.0)
+
 class DecideLayer(Layer):
 	def update(self):
 		self.updateV()
@@ -137,9 +177,9 @@ class MotorLayers:
 	def update(self, gate):
 		self.layer.input(self.prevLayer, bidirectional=False)
 		if vars.alphaCycleProgress["end"]:
-			self.prevLayer.constantOutput = self.layer.output.clone()
+			self.prevLayer.constantOutput = self.layer.output>0.5
 		if vars.alphaCycleProgress["plusPhase"]:
-			self.layer.input(gate)
+			self.layer.input(gate, bidirectional=False)
 		self.layer.update()
 		phaseLearn(self.layer)
 		traceRewardLearn(self.layer)
@@ -158,6 +198,9 @@ class PFLayers(DeeppredLayers):
 whereInputLayer = Layer(28*28)
 whatInputLayer = Layer(192)
 
+rewardPredPositive = RewardPredLayers(20)
+rewardPredNegative = RewardPredLayers(20)
+
 yesLayer = DecideLayer(20)
 noLayer = DecideLayer(20)
 actionLayer_m1 = DecideLayer(20)
@@ -171,18 +214,22 @@ def updateLayers(whatwhere):
 	learningSignal = 0.0
 	learningSignal += abs(env.reward)
 
-	#if env.video[0,0,0].item()>0.5: # this is temporary, will be removed later
-	#	learningSignal = 1.0
-
 	whatInputLayer.inputTensor(whatwhere[0])
 	whereInputLayer.inputTensor(whatwhere[1])
 	whatInputLayer.update()
 	whereInputLayer.update()
 
-	yesLayer.input(whatInputLayer)
-	yesLayer.input(whereInputLayer)
-	noLayer.input(whatInputLayer)
-	noLayer.input(whereInputLayer)
+	rewardPredPositive.acq.inputExcitatory[0:5] += 1.0 # bias to expect reward
+
+	rewardPredPositive.acq.input(whatInputLayer, howInitWeights="zero")
+	rewardPredPositive.acq.input(whereInputLayer, howInitWeights="zero")
+	rewardPredPositive.update()
+	rewardPredNegative.acq.input(whatInputLayer, howInitWeights="zero")
+	rewardPredNegative.acq.input(whereInputLayer, howInitWeights="zero")
+	rewardPredNegative.update()
+
+	yesLayer.input(rewardPredPositive.acq)
+	noLayer.input(rewardPredNegative.acq)
 	actionLayer_m1.input(yesLayer)
 	actionLayer_m1.input(noLayer, inhibit=True)
 	actionLayer_wm1.input(yesLayer)
@@ -197,8 +244,8 @@ def updateLayers(whatwhere):
 	wm1.input(whereInputLayer)
 	wm1.update(actionLayer_wm1)
 
-	m1.layer.input(whatInputLayer)
-	m1.layer.input(whereInputLayer)
+	m1.layer.input(whatInputLayer, rescaleTo=0.1) # these inputs should not trigger movements
+	m1.layer.input(whereInputLayer, rescaleTo=0.1)
 	m1.update(actionLayer_m1)
 
 
@@ -216,11 +263,16 @@ def plotThem():
 	plotAt(0,0, env.video.reshape(224,224,4), "video")
 	plotAt(0,1, whatInputLayer.output.view(12,16), "whatInputLayer")
 	plotAt(0,2, whereInputLayer.output.view(28,28), "whereInputLayer")
+	plotAt(1,1, [rewardPredPositive.acq.output], "rewardPredPositive")
+	plotAt(1,2, [rewardPredNegative.acq.output], "rewardPredNegative")
 	#axs[2,0].imshow([positiveOutcomePredictor.output], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
-	plotAt(2,1, [yesLayer.output], "yesLayer")
+	plotAt(2,0, [yesLayer.output], "yesLayer")
+	plotAt(2,1, [noLayer.output], "noLayer")
 	plotAt(2,2, [actionLayer_m1.output], "actionLayer_m1")
 	plotAt(3,0, [m1.layer.output], "m1")
-	plt.pause(0.1)
+	plotAt(3,1, [m1.layer.prevInputExcitatory], "m1")
+	plotAt(3,2, [m1.layer.prevInputInhibition], "m1")
+	plt.pause(1)
 	
 
 
@@ -240,7 +292,7 @@ async def ailoop():
 		plotThem()
 
 		for j in range(10):
-			vars.alphaCycleProgress = {"minusPhaseEnd": False, "end":j==9, "plusPhase":False}
+			vars.alphaCycleProgress = {"minusPhaseEnd": False, "end":j==9, "plusPhase":True}
 			updateLayers(whatwhere)
 
 		plotThem()
