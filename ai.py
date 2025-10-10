@@ -14,48 +14,61 @@ class vars:
 	hasReward = 0.0
 	alphaCycleProgress = {"minusPhaseEnd":False, "end":False, "plusPhase":False}
 	traceDecay = 0.1
+	boostActivitySpeed = 0.7
 
 
-def initWeights(self, sender, howInitWeights="random"):
-	match howInitWeights:
-		case "weak":
-			return torch.full((sender.shape,self.shape), 0.1)
-		case "random" | None:
-			return torch.rand((sender.shape,self.shape))*0.2+0.4
-		case "zero":
-			return torch.zeros((sender.shape,self.shape))
+def initWeightsKaiming(senderShape, receiverShape):
+	return torch.nn.init.kaiming_normal_(torch.empty((senderShape, receiverShape)), nonlinearity='relu').T
+def initWeightsS(senderShape, receiverShape):
+	chance = min(1.0 / senderShape * 10.0, 1.5)
+	w = torch.rand((senderShape, receiverShape))
+	w = (w - (1.0-chance)).clamp_min(0.0) / chance
+	w /= w.sum(dim=0, keepdim=True) + 0.0001
+	return w
+def initWeightsZero(senderShape, receiverShape):
+	return torch.zeros((senderShape, receiverShape))
+
+def rescale(thisInput, rescaleTo):
+	m = thisInput.mean()
+	if m>rescaleTo: thisInput = thisInput/(m/rescaleTo)
+	return thisInput
 
 class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
 		self.inputExcitatory = torch.zeros(shape)
 		self.inputInhibition = torch.zeros(shape)
-		#self.inputCount = 0.0
 		self.v = torch.zeros(shape)
 		self.output = torch.zeros(shape)
 		self.prevOutput = torch.zeros(shape)
 		self.w = {}
+		self.inputs = {}
 		self.senderInhibit = {} # which senders inhibit
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
-	def rescale(self, thisInput, rescaleTo):
-		m = thisInput.mean()
-		if m>rescaleTo: thisInput /= m/rescaleTo
-		return thisInput
-
-	def input(self, sender, inhibit=False, bidirectional=True, rescaleTo=1.0, howInitWeights=None):
+	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS):
 		if not sender in self.w:
-			self.w[sender] = initWeights(self, sender, howInitWeights=howInitWeights)
+			self.w[sender] = initWeights(sender.shape, self.shape)
 		self.senderInhibit[sender] = inhibit
+		self.inputs[sender] = sender.output
 
 		if inhibit:
-			self.inputExcitatory -= self.rescale(sender.output @ self.w[sender], rescaleTo=rescaleTo)
+			self.inputExcitatory -= sender.output @ self.w[sender]
 		else:
-			self.inputExcitatory += self.rescale(sender.output @ self.w[sender], rescaleTo=rescaleTo)
-			#self.inputCount += rescaleTo
+			self.inputExcitatory += sender.output @ self.w[sender]
 			if bidirectional:
-				sender.inputExcitatory += self.rescale(self.output @ self.w[sender].t(), rescaleTo=rescaleTo*0.2)
+				sender.inputExcitatory += self.output @ self.w[sender].T * 0.2
+
+	def inputv(self, v, key, initWeights=initWeightsS, rescaleTo=None):
+		if not key in self.w:
+			self.w[key] = initWeights(v.shape[0], self.shape)
+		self.senderInhibit[key] = False
+		self.inputs[key] = v
+		v = v @ self.w[key]
+		if rescaleTo is not None:
+			v = rescale(v, rescaleTo)
+		self.inputExcitatory += v
 
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
@@ -66,7 +79,6 @@ class Layer:
 
 	def updateV(self):
 		self.prevOutput = self.output
-		#if self.inputCount != 0.0: self.inputExcitatory /= self.inputCount
 		self.updateInhibit()
 		if self.constantOutput is not None:
 			self.output.copy_(self.constantOutput)
@@ -81,24 +93,41 @@ class Layer:
 		self.inputCount = 0.0
 	def update(self):
 		self.updateV()
+		boostActivity(self)
 
 def phaseLearn(self):
 	if vars.alphaCycleProgress["minusPhaseEnd"]:
 		self.outputMinusPhase = self.output.clone()
 	if vars.alphaCycleProgress["end"]:
-		for sender in self.w:
-			senderOutput = sender.output
+		for sender in self.inputs:
+			senderOutput = self.inputs[sender]
 			if self.senderInhibit[sender]: senderOutput = -senderOutput
 			self.w[sender] += (self.output-self.outputMinusPhase)[None,:] * senderOutput[:,None] * vars.lr
 			self.w[sender].clamp_(0.0,1.0)
+
+def boostActivity(self):
+	target = 0.5
+	layerTarget = 0.1
+	if not hasattr(self, "avgActivity"):
+		self.avgActivity = torch.full((self.shape,), target)
+		self.avgLayerActivity = target
+	self.avgActivity += (self.output - self.avgActivity) * vars.boostActivitySpeed
+	self.avgLayerActivity = (self.output.mean() - self.avgLayerActivity) * vars.boostActivitySpeed
+	if vars.alphaCycleProgress["end"]:
+		#std = self.output.std()
+		#mean = self.output.mean()
+		for sender in self.inputs:
+			self.w[sender] += ((target - self.avgActivity) + (layerTarget - self.avgLayerActivity))[None,:] * self.w[sender] * vars.boostActivitySpeed
+			#self.w[sender] += ((self.output-mean)*(1.0-std))[None,:] * self.w[sender] * vars.boostActivitySpeed
+
 def traceRewardLearn(self):
 	if vars.alphaCycleProgress["end"]:
 		if not hasattr(self, "senderTrace"):
 			self.trace = {}
-		for sender in self.w:
+		for sender in self.inputs:
 			if not sender in self.trace:
-				self.trace[sender] = torch.zeros((sender.shape,self.shape))
-			senderOutput = sender.output
+				self.trace[sender] = torch.zeros(self.w[sender].shape)
+			senderOutput = self.inputs[sender]
 			if self.senderInhibit[sender]: senderOutput = -senderOutput
 			self.trace[sender] += (senderOutput[:,None] * self.output[None,:] - self.trace[sender]) * vars.traceDecay
 			if vars.hasReward:
@@ -154,10 +183,10 @@ class RewardPredLayers(): #todo: finish
 		if vars.alphaCycleProgress["end"]:
 			self.acq.prevOutput = self.acq.output.clone()
 			#self.ext.prevOutput = self.ext.output.clone()
-		for sender in self.acq.w:
+		for sender in self.acq.inputs:
 			if not sender in self.acq.senderTrace:
-				self.acq.senderTrace[sender] = torch.zeros((sender.shape,))
-			senderOutput = sender.output
+				self.acq.senderTrace[sender] = torch.zeros(self.acq.inputs[sender].shape)
+			senderOutput = self.acq.inputs[sender]
 			if self.acq.senderInhibit[sender]: senderOutput = -senderOutput
 			self.acq.senderTrace[sender] += (senderOutput - self.acq.senderTrace[sender]) * vars.traceDecay
 			if vars.hasReward:
@@ -169,6 +198,7 @@ class DecideLayer(Layer):
 	def update(self):
 		self.updateV()
 		phaseLearn(self)
+		boostActivity(self)
 
 class MotorLayers:
 	def __init__(self, shape):
@@ -178,8 +208,7 @@ class MotorLayers:
 		self.layer.input(self.prevLayer, bidirectional=False)
 		if vars.alphaCycleProgress["end"]:
 			self.prevLayer.constantOutput = self.layer.output>0.5
-		if vars.alphaCycleProgress["plusPhase"]:
-			self.layer.input(gate, bidirectional=False)
+		self.layer.inputv(gate, key="gate")
 		self.layer.update()
 		phaseLearn(self.layer)
 		traceRewardLearn(self.layer)
@@ -191,7 +220,7 @@ class PFLayers(DeeppredLayers):
 	def update(self, gate):
 		self.s.inputTensor(self.mem)
 		super().update()
-		if gate.output[0] > 0.5:
+		if gate[0] > 0.5:
 			self.mem.copy_(self.s.output)
 
 
@@ -203,8 +232,7 @@ rewardPredNegative = RewardPredLayers(20)
 
 yesLayer = DecideLayer(20)
 noLayer = DecideLayer(20)
-actionLayer_m1 = DecideLayer(20)
-actionLayer_wm1 = DecideLayer(1)
+actionLayer = DecideLayer(20+1)
 
 wm1 = PFLayers(20)
 
@@ -218,35 +246,32 @@ def updateLayers(whatwhere):
 	whereInputLayer.inputTensor(whatwhere[1])
 	whatInputLayer.update()
 	whereInputLayer.update()
+	
+	rewardPredPositive.acq.inputExcitatory[0:5] += 0.5 # bias to expect reward
 
-	rewardPredPositive.acq.inputExcitatory[0:5] += 1.0 # bias to expect reward
-
-	rewardPredPositive.acq.input(whatInputLayer, howInitWeights="zero")
-	rewardPredPositive.acq.input(whereInputLayer, howInitWeights="zero")
+	rewardPredPositive.acq.input(whatInputLayer, initWeights=initWeightsZero)
+	rewardPredPositive.acq.input(whereInputLayer, initWeights=initWeightsZero)
 	rewardPredPositive.update()
-	rewardPredNegative.acq.input(whatInputLayer, howInitWeights="zero")
-	rewardPredNegative.acq.input(whereInputLayer, howInitWeights="zero")
+	rewardPredNegative.acq.input(whatInputLayer, initWeights=initWeightsZero)
+	rewardPredNegative.acq.input(whereInputLayer, initWeights=initWeightsZero)
 	rewardPredNegative.update()
 
 	yesLayer.input(rewardPredPositive.acq)
 	noLayer.input(rewardPredNegative.acq)
-	actionLayer_m1.input(yesLayer)
-	actionLayer_m1.input(noLayer, inhibit=True)
-	actionLayer_wm1.input(yesLayer)
-	actionLayer_wm1.input(noLayer, inhibit=True)
+	actionLayer.input(yesLayer)
+	actionLayer.input(noLayer, inhibit=True)
 
 	yesLayer.update()
 	noLayer.update()
-	actionLayer_m1.update()
-	actionLayer_wm1.update()
+	actionLayer.update()
 
 	wm1.input(whatInputLayer)
 	wm1.input(whereInputLayer)
-	wm1.update(actionLayer_wm1)
+	wm1.update(actionLayer.output[20:21])
 
-	m1.layer.input(whatInputLayer, rescaleTo=0.1) # these inputs should not trigger movements
-	m1.layer.input(whereInputLayer, rescaleTo=0.1)
-	m1.update(actionLayer_m1)
+	m1.layer.inputv(whatInputLayer.output, whatInputLayer, rescaleTo=0.1) # these inputs should not trigger movements
+	m1.layer.inputv(whereInputLayer.output, whereInputLayer, rescaleTo=0.1)
+	m1.update(actionLayer.output[0:20])
 
 
 fig, axs = plt.subplots(4, 3)
@@ -268,7 +293,7 @@ def plotThem():
 	#axs[2,0].imshow([positiveOutcomePredictor.output], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
 	plotAt(2,0, [yesLayer.output], "yesLayer")
 	plotAt(2,1, [noLayer.output], "noLayer")
-	plotAt(2,2, [actionLayer_m1.output], "actionLayer_m1")
+	plotAt(2,2, [actionLayer.output], "actionLayer")
 	plotAt(3,0, [m1.layer.output], "m1")
 	plotAt(3,1, [m1.layer.prevInputExcitatory], "m1")
 	plotAt(3,2, [m1.layer.prevInputInhibition], "m1")

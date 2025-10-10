@@ -35,7 +35,7 @@ memory of what happened recently in last few seconds.
 
 
 # how it goes together
-on Sep 6, 2025, i was at el carmelo and thinking about adding a layer that detect relations and a layer that recalls memories and pfc layers.
+<details>on Sep 6, 2025, i was at el carmelo and thinking about adding a layer that detect relations and a layer that recalls memories and pfc layers.</details>
 
 first, there is video input
 * the first visual layer processes it into lines and edges.
@@ -293,4 +293,109 @@ Think of this as your brain saying:
 * **Motor cortex** = Executes the steps in the program, using internal loops and external feedback.
 * **Thalamus & cerebellum** = Act as modulators and quality controllers, ensuring the program keeps running smoothly and accurately.
 
+
+
+# what kind of movement can motor cortex do at first
+ChatGPT said:
+
+#### ✅ **Not Random, Not Uniform — but Broad and Redundant**
+
+* Synapses **don’t form uniformly** (every neuron doesn’t connect to every other neuron equally).
+* They also **don’t form purely randomly**.
+* Instead, they form **broad, overlapping, and functionally permissive** networks.
+
+These early connections are like a **rough draft** — lots of possibilities are wired up early, so the system can learn from experience which ones work best.
+
+---
+
+### 🧬 1. **Genetic Blueprint Sets the Stage**
+
+* Genes guide **initial connectivity patterns** (e.g. motor cortex neurons project toward the spinal cord).
+* These projections reach **broad target zones** — for example, one corticospinal neuron might initially connect to **many spinal motor neurons**.
+* There's a **developmental bias** toward forming connections that are *possible* and *useful*, but not precise.
+
+Think of it like laying down **extra train tracks** before you know which routes will be most efficient.
+
+---
+
+### 🔁 2. **Activity-Dependent Refinement (Experience Prunes the Map)**
+
+* As the baby (or animal) moves and senses the consequences:
+
+  * **Useful connections are strengthened** (Hebbian plasticity),
+  * **Ineffective or unused ones are weakened and pruned** (synaptic elimination).
+* This process makes the system **more efficient and specialized** over time.
+* It's guided by:
+
+  * **Motor feedback**
+  * **Sensory input (especially proprioception and touch)**
+  * **Spontaneous activity (e.g., "motor babbling")**
+
+> 🧪 For example: Corticospinal neurons in early development may connect to both leg and arm motor pools. Later, only the functionally relevant ones (say, to leg muscles) are retained.
+
+---
+
+### 🧠 In the Motor Cortex:
+
+* Early on: One cortical neuron might influence **many muscles**, and **multiple cortical areas** might influence the same muscle.
+* Later: Connections become more **specific and topographically organized** (somatotopy).
+
+
+# how does it know if a movement is successful
+ChatGPT said:
+
+### ✅ 1. **Sensory Feedback (Proprioception & Tactile)**
+
+After a movement, the brain receives detailed sensory feedback:
+
+* **Proprioception**: Signals from muscles, joints, and tendons (via muscle spindles and Golgi tendon organs) tell the brain about **limb position**, **movement direction**, and **force**.
+* **Touch**: Skin receptors give info about contact, pressure, texture, etc.
+
+> 🧠 Example: If you reach for a cup and your hand wraps around it, proprioceptive and tactile signals confirm success — position, pressure, grip force all match the goal.
+
+These signals go to:
+
+* **Somatosensory cortex**
+* **Cerebellum**
+* **Basal ganglia**
+* And are used to compare *expected vs. actual* outcome.
+
+---
+
+### 🔁 2. **Internal Forward Models (Prediction vs. Reality)**
+
+The brain uses **internal models** to *predict* the sensory consequences of motor commands (via the cerebellum and cortex).
+
+* Before a movement, the brain **predicts** what should happen.
+* After the movement, it **compares prediction to actual sensory feedback**.
+* A **match** = success. A **mismatch** = error, triggering learning.
+
+> This is called **"error-based learning"**, especially prominent in the **cerebellum**.
+
+---
+
+### 🎯 3. **Goal-Based Feedback (Visual, Auditory, etc.)**
+
+For externally guided tasks (like hitting a target or speaking a word), success is also judged based on **external sensory cues**:
+
+* Did the hand land on the object (visual)?
+* Did the sound come out correctly (auditory)?
+* Did the ball go in the net?
+
+These outcomes are processed and fed back to:
+
+* **Prefrontal cortex** (decision making, goals)
+* **Basal ganglia** (reward learning)
+* **Motor areas** (refinement)
+
+---
+
+### 🧪 4. **Reinforcement Feedback (Dopamine, Reward Signals)**
+
+The **basal ganglia** and **dopaminergic system** evaluate whether an outcome was **rewarding or not**.
+
+* If a movement leads to a **positive result** (goal achieved, praise, success), **dopamine is released**.
+* This reinforces the neural pathways that produced the movement.
+
+> This is called **reinforcement learning**, and it works in parallel with error-based learning.
 
