@@ -14,7 +14,8 @@ class vars:
 	hasReward = 0.0
 	alphaCycleProgress = {"minusPhaseEnd":False, "end":False, "plusPhase":False}
 	traceDecay = 0.1
-	boostActivitySpeed = 0.7
+	boostActivitySpeed = 0.1
+	age = 0
 
 
 def initWeightsKaiming(senderShape, receiverShape):
@@ -108,16 +109,18 @@ def phaseLearn(self):
 def boostActivity(self):
 	target = 0.5
 	layerTarget = 0.1
-	if not hasattr(self, "avgActivity"):
-		self.avgActivity = torch.full((self.shape,), target)
-		self.avgLayerActivity = target
-	self.avgActivity += (self.output - self.avgActivity) * vars.boostActivitySpeed
+	if not hasattr(self, "avgOutputActivity"):
+		self.avgOutputActivity = torch.full((self.shape,), target)
+		#self.avgInputActivity = torch.full((self.shape,), target)
+		self.avgLayerActivity = layerTarget
+	self.avgOutputActivity += (self.output - self.avgOutputActivity) * vars.boostActivitySpeed
+	#self.avgInputActivity += (self.v - self.avgInputActivity) * vars.boostActivitySpeed
 	self.avgLayerActivity = (self.output.mean() - self.avgLayerActivity) * vars.boostActivitySpeed
 	if vars.alphaCycleProgress["end"]:
 		#std = self.output.std()
 		#mean = self.output.mean()
 		for sender in self.inputs:
-			self.w[sender] += ((target - self.avgActivity) + (layerTarget - self.avgLayerActivity))[None,:] * self.w[sender] * vars.boostActivitySpeed
+			self.w[sender] += ((target - self.avgOutputActivity)/2.0 + (layerTarget - self.avgLayerActivity))[None,:] * self.w[sender] * vars.boostActivitySpeed
 			#self.w[sender] += ((self.output-mean)*(1.0-std))[None,:] * self.w[sender] * vars.boostActivitySpeed
 
 def traceRewardLearn(self):
@@ -276,15 +279,12 @@ def updateLayers(whatwhere):
 
 fig, axs = plt.subplots(4, 3)
 def plotAt(x,y, v, title):
-	if len(axs[x,y].images):
-		axs[x,y].images[0].set_data(v)
-	else:
-		axs[x,y].imshow(v, vmin=0,vmax=1)
+	if len(axs[x,y].images): axs[x,y].images[0].set_data(v)
+	else: axs[x,y].imshow(v, vmin=0,vmax=1)
 	axs[x,y].set_title(title)
-
 def plotThem():
 	axs[1,0].clear()
-	axs[1,0].text(0.1,0.1, f"reward: {env.reward}")
+	axs[1,0].text(0.1,0.1, f"reward: {vars.hasReward}\n age: {vars.age}")
 	plotAt(0,0, env.video.reshape(224,224,4), "video")
 	plotAt(0,1, whatInputLayer.output.view(12,16), "whatInputLayer")
 	plotAt(0,2, whereInputLayer.output.view(28,28), "whereInputLayer")
@@ -306,6 +306,16 @@ async def ailoop():
 		await env.step(m1.layer.output)
 		vars.hasReward = env.reward
 
+		if vars.age < 20:
+			vars.lr = 0.5
+			vars.boostActivitySpeed = 0.1
+		elif vars.age < 50:
+			vars.lr = 0.5
+			vars.boostActivitySpeed = 0.01
+		else:
+			vars.lr = 0.1
+			vars.boostActivitySpeed = 0.001
+
 		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)
 		whatwhere = absvit.run(video[:,:,0:3].permute(2,0,1), whatInputLayer.output, whereInputLayer.output)
 		#whatwhere[1] *= video[:,:,3].view(784,1) # ignore transparent parts
@@ -319,6 +329,7 @@ async def ailoop():
 		for j in range(10):
 			vars.alphaCycleProgress = {"minusPhaseEnd": False, "end":j==9, "plusPhase":True}
 			updateLayers(whatwhere)
+		vars.age += 1
 
 		plotThem()
 

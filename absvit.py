@@ -36,6 +36,7 @@ if False:
 		return transform(Image.open(Path.home()/path).convert('RGB')).unsqueeze(0)  # Shape: [1, 3, 224, 224]
 
 	input = getImage("Downloads/Screenshot 2025-04-10 10.50.49 AM.jpg")
+	input2 = getImage("Downloads/b.jpg")
 
 # %%
 #def forward(input, channel_attention, spatial_attention):
@@ -87,33 +88,37 @@ def rescale(x):
 	#	max = max+1
 	#return (x - min) / (max - min)
 
+model.prevX = None
+
 @torch.no_grad
 def run(input, channel_attention=None, spatial_attention=None):
 	if len(input) == 3:
 		input = input[None,...]
-	x, _, _ = model.forward_features(input)
 	
-	if channel_attention is not None and spatial_attention is not None:
+	td = None
+	if model.prevX is not None and channel_attention is not None:
 		spatial_attention = torch.cat((torch.ones(model.num_prefix_tokens), spatial_attention))
-		x = x * channel_attention[None,None,:] * spatial_attention[None,:,None]
+		x = model.prevX * (channel_attention[None,None,:] + spatial_attention[None,:,None]) + 0.2
+		x /= x.max()
 		td = model.feedback(x)
 
-		x2, _, _ = model.forward_features(input, td)
-		x = (x+x2)/2.0 #(rescale(x)+rescale(x2))/2.0
-
-	return (
-		torch.linalg.vector_norm(x[0], dim=0),
-		torch.linalg.vector_norm(x[0,model.num_prefix_tokens:], dim=1)
-	)
+	x, _, _ = model.forward_features(input, td)
+	model.prevX = x
+	
+	ca = torch.mean(x[0], dim=0)
+	ca[149] = 0
+	ca[181] = 0
+	sa = torch.mean(x[0,model.num_prefix_tokens:], dim=1)
+	return rescale(ca), rescale(sa)
 
 # %%
 if False:
 	#%%
 	import matplotlib.pyplot as plt
 	(ca,sa) = run(input,ca,sa)
-	ca=torch.tanh(ca)
-	sa=torch.tanh(sa)
+	#ca=torch.tanh(ca)
+	#sa=torch.tanh(sa)
 	fig, axs = plt.subplots(2)
-	axs[0].imshow(sa.view(28,28).detach())
-	axs[1].imshow(ca.view(12,16).detach())
+	axs[0].imshow(sa.view(28,28).detach(), vmin=0, vmax=1)
+	axs[1].imshow(ca.view(12,16).detach(), vmin=0, vmax=1)
 # %%
