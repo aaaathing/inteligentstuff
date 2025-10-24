@@ -12,6 +12,7 @@ device=torch.device("cpu")
 
 # %%
 
+print("loading AbSViT...")
 model = 'absvit_tiny_patch16_224'
 resume = 'https://berkeley.box.com/shared/static/7415yz4d1l5z0ur6x32k35f8y99zgynq.pth'
 
@@ -20,6 +21,7 @@ model.to(device)
 model.eval()
 checkpoint = torch.hub.load_state_dict_from_url(resume, map_location=device)
 model.load_state_dict(checkpoint['model'])
+print("loaded AbSViT")
 
 #%%
 if False:

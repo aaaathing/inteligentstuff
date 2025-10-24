@@ -45,6 +45,7 @@ class Layer:
 		self.w = {}
 		self.inputs = {}
 		self.senderInhibit = {} # which senders inhibit
+		self.receivers = set()
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
@@ -53,6 +54,7 @@ class Layer:
 			self.w[sender] = initWeights(sender.shape, self.shape)
 		self.senderInhibit[sender] = inhibit
 		self.inputs[sender] = sender.output
+		sender.receivers.add(self)
 
 		if inhibit:
 			self.inputExcitatory -= sender.output @ self.w[sender]
@@ -91,7 +93,6 @@ class Layer:
 		self.prevInputInhibition = self.inputInhibition
 		self.inputExcitatory = torch.zeros(self.shape)
 		self.inputInhibition = torch.zeros(self.shape)
-		self.inputCount = 0.0
 	def update(self):
 		self.updateV()
 		boostActivity(self)
@@ -136,41 +137,62 @@ def traceRewardLearn(self):
 			if vars.hasReward:
 				self.w[sender] += self.trace[sender] * vars.hasReward * vars.lr
 
-class DeeppredLayers:
-	" see 2025/09-09-temporal-predict "
+class SpikingLayer(Layer):
+	def __init__(self, shape: int):
+		super().__init__(shape)
+		self.refractoryTimer = torch.zeros(shape)
+		self.v.fill_(-70.0)
+	def updateV(self):
+		self.prevOutput = self.output
+		self.updateInhibit()
+		netInput = self.inputExcitatory*(0.0-self.v) + self.inputInhibition*(-90-self.v) + 0.2*(-70.0-self.v) + torch.sigmoid((self.v+35.0)/2.0)*(145.0-self.v)
+		refractory = self.refractoryTimer > 0.0; notRefractory = self.refractoryTimer <= 0.0
+		self.v[notRefractory] += netInput[notRefractory]
+		self.v[refractory] += (-70.0 - self.v[refractory]) * 0.6
+		self.output = torch.logical_and(self.v > 0.0, notRefractory).float()
+		self.refractoryTimer -= 1.0
+		self.refractoryTimer[self.v > 0.0] = 3.0
+		self.inputExcitatory = torch.zeros(self.shape)
+		self.inputInhibition = torch.zeros(self.shape)
+
+"""
+s=SpikingLayer(10)
+w=(torch.rand((10,10))>0.8).float()
+for i in range(100):
+	if i<20: s.inputExcitatory[0:5] += 1.0
+	s.v += ((s.v[:,None]-s.v[None,:])*(w+w.T)/2).sum(dim=0) * 0.5
+	s.update()
+	plt.cla()
+	plt.imshow([s.v], vmin=-70,vmax=50)
+	plt.pause(1)
+"""
+
+
+class DeeppredLayer(Layer):
+	" see 2025/09-09-temporal-predict for original "
 	def __init__(self, shape):
-		self.s = Layer(shape) # superficial
-		self.p = {} # predicting layers / pulvinar
-		self.c = Layer(shape) # previous superficial layer activation / CT
-		#self.cInput = Layer(shape)
-		self.lowerLayers = set()
-	def input(self, sender, *args, **kwargs):
-		if not sender in self.lowerLayers:
-			self.lowerLayers.add(sender)
-		self.s.input(sender, *args, **kwargs)
+		super().__init__(shape)
+		self.predLayer = Layer(shape)
+		self.predLayerInputs = {}
 		
 	def update(self):
-		self.c.update()
-		#self.c.input(self.cInput, bidirectional=False)
-		for lowerLayer in self.lowerLayers:
-			if not lowerLayer in self.p:
-				self.p[lowerLayer] = Layer(lowerLayer.shape)
+		super().update()
+		phaseLearn(self)
 
-			if vars.alphaCycleProgress["plusPhase"]:
-				self.p[lowerLayer].constantOutput = lowerLayer.output
-			else:
-				self.p[lowerLayer].constantOutput = None
-				self.p[lowerLayer].input(self.c, bidirectional=False)
+		if vars.alphaCycleProgress["plusPhase"]:
+			self.predLayer.constantOutput = self.output
+		else:
+			self.predLayer.constantOutput = None
+			for input in self.predLayerInputs:
+				self.predLayer.inputv(self.predLayerInputs[input], input)
 
-			self.p[lowerLayer].update()
-			phaseLearn(self.p[lowerLayer])
-			self.s.input(self.p[lowerLayer], bidirectional=False)
-
-		self.s.update()
-		phaseLearn(self.s)
-		
-		if vars.alphaCycleProgress["end"]:
-			self.c.constantOutput = self.s.output.clone()
+		self.predLayer.update()
+		phaseLearn(self.predLayer)
+		for receiver in self.receivers:
+			if isinstance(receiver, DeeppredLayer):
+				receiver.input(self.predLayer, bidirectional=False)
+				if vars.alphaCycleProgress["end"]:
+					self.predLayerInputs[receiver] = receiver.output.clone()
 
 class RewardPredLayers(): #todo: finish
 	def __init__(self, shape):
@@ -216,19 +238,19 @@ class MotorLayers:
 		phaseLearn(self.layer)
 		traceRewardLearn(self.layer)
 
-class PFLayers(DeeppredLayers):
+class PFLayer(DeeppredLayer):
 	def __init__(self, shape):
 		super().__init__(shape)
-		self.mem = torch.zeros(shape)
+		self.memLayer = torch.zeros(shape)
 	def update(self, gate):
-		self.s.inputTensor(self.mem)
+		self.inputTensor(self.memLayer)
 		super().update()
 		if gate[0] > 0.5:
-			self.mem.copy_(self.s.output)
+			self.memLayer.copy_(self.output)
 
 
-whereInputLayer = Layer(28*28)
-whatInputLayer = Layer(192)
+whereInputLayer = DeeppredLayer(28*28)
+whatInputLayer = DeeppredLayer(192)
 
 rewardPredPositive = RewardPredLayers(20)
 rewardPredNegative = RewardPredLayers(20)
@@ -237,7 +259,7 @@ yesLayer = DecideLayer(20)
 noLayer = DecideLayer(20)
 actionLayer = DecideLayer(20+1)
 
-wm1 = PFLayers(20)
+wm1 = PFLayer(20)
 
 m1 = MotorLayers(15)
 
@@ -307,13 +329,13 @@ async def ailoop():
 		vars.hasReward = env.reward
 
 		if vars.age < 20:
-			vars.lr = 0.5
+			vars.lr = 0.1
 			vars.boostActivitySpeed = 0.1
 		elif vars.age < 50:
-			vars.lr = 0.5
+			vars.lr = 0.1
 			vars.boostActivitySpeed = 0.01
 		else:
-			vars.lr = 0.1
+			vars.lr = 0.01
 			vars.boostActivitySpeed = 0.001
 
 		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)
