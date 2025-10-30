@@ -18,8 +18,14 @@ class vars:
 	age = 0
 
 
-def initWeightsKaiming(senderShape, receiverShape):
-	return torch.nn.init.kaiming_normal_(torch.empty((senderShape, receiverShape)), nonlinearity='relu').T
+def flattenShape(shape):
+	if isinstance(shape, tuple):
+		prod = 1
+		for s in shape:
+			prod *= s
+		return prod
+	else:
+		return shape
 def initWeightsS(senderShape, receiverShape):
 	chance = min(1.0 / senderShape * 10.0, 1.5)
 	w = torch.rand((senderShape, receiverShape))
@@ -37,11 +43,13 @@ def rescale(thisInput, rescaleTo):
 class Layer:
 	def __init__(self, shape: int):
 		self.shape = shape
-		self.inputExcitatory = torch.zeros(shape)
-		self.inputInhibition = torch.zeros(shape)
-		self.v = torch.zeros(shape)
-		self.output = torch.zeros(shape)
-		self.prevOutput = torch.zeros(shape)
+		if not isinstance(shape, tuple): self.shape = (shape,)
+		self.size = flattenShape(shape)
+		self.inputExcitatory = torch.zeros(self.size)
+		self.inputInhibition = torch.zeros(self.size)
+		self.v = torch.zeros(self.size)
+		self.output = torch.zeros(self.size)
+		self.prevOutput = torch.zeros(self.size)
 		self.w = {}
 		self.inputs = {}
 		self.senderInhibit = {} # which senders inhibit
@@ -51,7 +59,7 @@ class Layer:
 
 	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS):
 		if not sender in self.w:
-			self.w[sender] = initWeights(sender.shape, self.shape)
+			self.w[sender] = initWeights(sender.size, self.size)
 		self.senderInhibit[sender] = inhibit
 		self.inputs[sender] = sender.output
 		sender.receivers.add(self)
@@ -65,7 +73,7 @@ class Layer:
 
 	def inputv(self, v, key, initWeights=initWeightsS, rescaleTo=None):
 		if not key in self.w:
-			self.w[key] = initWeights(v.shape[0], self.shape)
+			self.w[key] = initWeights(flattenShape(v.shape), self.size)
 		self.senderInhibit[key] = False
 		self.inputs[key] = v
 		v = v @ self.w[key]
@@ -76,9 +84,13 @@ class Layer:
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
 	def updateInhibit(self):
-		feedforwardInhibition = max((self.inputExcitatory.mean()+self.inputExcitatory.max())/2.0 - 1.0, 0.0) # if input is more than 1, start inhibiting it
-		self.feedbackInhibition.lerp_(self.prevOutput.mean(), 0.5)
-		self.inputInhibition += feedforwardInhibition + self.feedbackInhibition
+		feedforwardInhibition = ((self.inputExcitatory.mean()+self.inputExcitatory.max())/2.0 - 1.0).clamp_min(0.0) # if input is more than 1, start inhibiting it
+		feedbackInhibition = self.prevOutput.mean()
+		if len(self.shape) > 1:
+			feedforwardInhibition = torch.maximum(feedforwardInhibition, ((self.inputExcitatory.view(self.shape).mean(dim=1, keepdim=True) + self.inputExcitatory.view(self.shape).amax(dim=1, keepdim=True))/2.0 - 1.0).clamp_min(0.0))
+			feedbackInhibition = torch.maximum(feedbackInhibition, self.prevOutput.view(self.shape).mean(dim=1, keepdim=True))
+		self.feedbackInhibition.lerp_(feedbackInhibition, 0.5)
+		self.inputInhibition += (feedforwardInhibition + self.feedbackInhibition).expand(self.shape).flatten()
 
 	def updateV(self):
 		self.prevOutput = self.output
@@ -91,8 +103,8 @@ class Layer:
 			self.output = torch.tanh(2.0*self.v.clamp_min(0.0))
 		self.prevInputExcitatory = self.inputExcitatory
 		self.prevInputInhibition = self.inputInhibition
-		self.inputExcitatory = torch.zeros(self.shape)
-		self.inputInhibition = torch.zeros(self.shape)
+		self.inputExcitatory = torch.zeros(self.size)
+		self.inputInhibition = torch.zeros(self.size)
 	def update(self):
 		self.updateV()
 		boostActivity(self)
@@ -111,8 +123,8 @@ def boostActivity(self):
 	target = 0.5
 	layerTarget = 0.1
 	if not hasattr(self, "avgOutputActivity"):
-		self.avgOutputActivity = torch.full((self.shape,), target)
-		#self.avgInputActivity = torch.full((self.shape,), target)
+		self.avgOutputActivity = torch.full((self.size,), target)
+		#self.avgInputActivity = torch.full((self.size,), target)
 		self.avgLayerActivity = layerTarget
 	self.avgOutputActivity += (self.output - self.avgOutputActivity) * vars.boostActivitySpeed
 	#self.avgInputActivity += (self.v - self.avgInputActivity) * vars.boostActivitySpeed
@@ -140,7 +152,7 @@ def traceRewardLearn(self):
 class SpikingLayer(Layer):
 	def __init__(self, shape: int):
 		super().__init__(shape)
-		self.refractoryTimer = torch.zeros(shape)
+		self.refractoryTimer = torch.zeros(self.size)
 		self.v.fill_(-70.0)
 	def updateV(self):
 		self.prevOutput = self.output
@@ -152,8 +164,8 @@ class SpikingLayer(Layer):
 		self.output = torch.logical_and(self.v > 0.0, notRefractory).float()
 		self.refractoryTimer -= 1.0
 		self.refractoryTimer[self.v > 0.0] = 3.0
-		self.inputExcitatory = torch.zeros(self.shape)
-		self.inputInhibition = torch.zeros(self.shape)
+		self.inputExcitatory = torch.zeros(self.size)
+		self.inputInhibition = torch.zeros(self.size)
 
 """
 s=SpikingLayer(10)
@@ -241,7 +253,7 @@ class MotorLayers:
 class PFLayer(DeeppredLayer):
 	def __init__(self, shape):
 		super().__init__(shape)
-		self.memLayer = torch.zeros(shape)
+		self.memLayer = torch.zeros(self.size)
 	def update(self, gate):
 		self.inputTensor(self.memLayer)
 		super().update()
@@ -249,15 +261,68 @@ class PFLayer(DeeppredLayer):
 			self.memLayer.copy_(self.output)
 
 
+# Awesome idea!
+decideShape = (20,36)
+class DecideLayer(Layer):
+	def __init__(self, shape: int):
+		super().__init__(shape)
+		self.trace = {}
+	def addTrace(self, sender, trace):
+		if not sender in self.trace:
+			self.trace[sender] = torch.zeros(self.w[sender].shape)
+		self.trace[sender] += (trace - self.trace[sender]) * vars.traceDecay
+dMtxGo = DecideLayer(decideShape)
+dMtxNogo = DecideLayer(decideShape)
+#actionLayer = DecideLayer(20+1)
+dPatchD1 = DecideLayer(decideShape)
+dPatchD2 = DecideLayer(decideShape)
+dDecision = None
+def updateDecide():
+	dInputs = [whatInputLayer,whereInputLayer]
+	for i in dInputs:
+		dMtxGo.input(i, bidirectional=False)
+		dMtxNogo.input(i, bidirectional=False)
+		dPatchD1.input(i, bidirectional=False)
+		dPatchD2.input(i, bidirectional=False)
+	dMtxGo.update()
+	dMtxNogo.update()
+	dPatchD1.update()
+	dPatchD2.update()
+	global dDecision
+	dDecision = dMtxGo.output.view(decideShape).mean(dim=1, keepdim=True) - dMtxNogo.output.view(decideShape).mean(dim=1, keepdim=True)
+	decision = dDecision.expand(decideShape).flatten()
+	dDecision = dDecision.flatten()
+	d1 = dPatchD1.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
+	d2 = dPatchD2.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
+	for sender in dInputs:
+		goOffTrace = torch.where(decision<0.1, (d2 - d1) * sender.output[:,None] * dMtxGo.output[None,:] * 0.1, 0.0)
+		nogoOffTrace = torch.where(decision<0.1, (d2 - d1) * sender.output[:,None] * dMtxNogo.output[None,:] * 0.1, 0.0)
+		dMtxGo.addTrace(sender, decision * ((1.0-d1)+d2) * sender.output[:,None] * dMtxGo.output[None,:] + goOffTrace)
+		dMtxNogo.addTrace(sender, decision * ((1.0-d1)+d2) * sender.output[:,None] * dMtxNogo.output[None,:] + nogoOffTrace)
+		dPatchD1.addTrace(sender, decision * sender.output[:,None] * dPatchD1.output[None,:])
+		dPatchD2.addTrace(sender, decision * sender.output[:,None] * dPatchD2.output[None,:])
+		if vars.hasReward:
+			dMtxGo.w[sender] += dMtxGo.trace[sender] * vars.hasReward * vars.lr
+			dMtxNogo.w[sender] -= dMtxNogo.trace[sender] * vars.hasReward * vars.lr
+			dPatchD1.w[sender] += dPatchD1.trace[sender] * vars.hasReward * vars.lr
+			dPatchD2.w[sender] -= dPatchD2.trace[sender] * vars.hasReward * vars.lr
+		dPatchD1.w[sender].clamp_(0.0,1.0)
+		dPatchD2.w[sender].clamp_(0.0,1.0)
+
+	# <ChatGPT>: For the motor thalamus (VA/VL nuclei) specifically: It’s tonically active, but its activity is continuously inhibited by the basal ganglia output nuclei (GPi/SNr).
+
+	#vMtxGo.input(rewardPredPositive.acq)
+	#vMtxNogo.input(rewardPredNegative.acq)
+	#vPatchD1.input(rewardPredPositive.acq)
+	#vPatchD2.input(rewardPredNegative.acq)
+	# vs patch recieves from PTp, vs mtx recieves from normal
+
+
 whereInputLayer = DeeppredLayer(28*28)
 whatInputLayer = DeeppredLayer(192)
 
 rewardPredPositive = RewardPredLayers(20)
 rewardPredNegative = RewardPredLayers(20)
-
-yesLayer = DecideLayer(20)
-noLayer = DecideLayer(20)
-actionLayer = DecideLayer(20+1)
 
 wm1 = PFLayer(20)
 
@@ -281,41 +346,36 @@ def updateLayers(whatwhere):
 	rewardPredNegative.acq.input(whereInputLayer, initWeights=initWeightsZero)
 	rewardPredNegative.update()
 
-	yesLayer.input(rewardPredPositive.acq)
-	noLayer.input(rewardPredNegative.acq)
-	actionLayer.input(yesLayer)
-	actionLayer.input(noLayer, inhibit=True)
+	updateDecide()
 
-	yesLayer.update()
-	noLayer.update()
-	actionLayer.update()
-
-	wm1.input(whatInputLayer)
-	wm1.input(whereInputLayer)
-	wm1.update(actionLayer.output[20:21])
+	#wm1.input(whatInputLayer)
+	#wm1.input(whereInputLayer)
+	#wm1.update(actionLayer.output[20:21])
 
 	m1.layer.inputv(whatInputLayer.output, whatInputLayer, rescaleTo=0.1) # these inputs should not trigger movements
 	m1.layer.inputv(whereInputLayer.output, whereInputLayer, rescaleTo=0.1)
-	m1.update(actionLayer.output[0:20])
+	m1.update(dDecision)
 
 
-fig, axs = plt.subplots(4, 3)
+fig, axs = plt.subplots(4, 4)
 def plotAt(x,y, v, title):
 	if len(axs[x,y].images): axs[x,y].images[0].set_data(v)
 	else: axs[x,y].imshow(v, vmin=0,vmax=1)
 	axs[x,y].set_title(title)
 def plotThem():
-	axs[1,0].clear()
-	axs[1,0].text(0.1,0.1, f"reward: {vars.hasReward}\n age: {vars.age}")
+	axs[0,3].clear()
+	axs[0,3].text(0.1,0.1, f"reward: {vars.hasReward}\n age: {vars.age}")
 	plotAt(0,0, env.video.reshape(224,224,4), "video")
 	plotAt(0,1, whatInputLayer.output.view(12,16), "whatInputLayer")
 	plotAt(0,2, whereInputLayer.output.view(28,28), "whereInputLayer")
 	plotAt(1,1, [rewardPredPositive.acq.output], "rewardPredPositive")
 	plotAt(1,2, [rewardPredNegative.acq.output], "rewardPredNegative")
 	#axs[2,0].imshow([positiveOutcomePredictor.output], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
-	plotAt(2,0, [yesLayer.output], "yesLayer")
-	plotAt(2,1, [noLayer.output], "noLayer")
-	plotAt(2,2, [actionLayer.output], "actionLayer")
+	plotAt(2,0, dMtxGo.output.view(dMtxGo.shape), "dMtxGo")
+	plotAt(2,1, dMtxNogo.output.view(dMtxNogo.shape), "dMtxNogo")
+	plotAt(2,2, dPatchD1.output.view(dPatchD1.shape), "dPatchD1")
+	plotAt(2,3, dPatchD2.output.view(dPatchD2.shape), "dPatchD2")
+	#plotAt(2,2, [actionLayer.output], "actionLayer")
 	plotAt(3,0, [m1.layer.output], "m1")
 	plotAt(3,1, [m1.layer.prevInputExcitatory], "m1")
 	plotAt(3,2, [m1.layer.prevInputInhibition], "m1")

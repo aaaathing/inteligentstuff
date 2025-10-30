@@ -43,4 +43,4 @@ env = Env()
 
 
 import socket
-print("Local address:", *socket.gethostbyname_ex(socket.gethostname()))
+print("Your address (url):", socket.gethostname())
