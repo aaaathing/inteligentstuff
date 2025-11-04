@@ -13,7 +13,7 @@ class vars:
 	lr = 0.5
 	hasReward = 0.0
 	alphaCycleProgress = {"minusPhaseEnd":False, "end":False, "plusPhase":False}
-	traceDecay = 0.1
+	traceDecay = 0.01
 	boostActivitySpeed = 0.1
 	age = 0
 
@@ -26,19 +26,27 @@ def flattenShape(shape):
 		return prod
 	else:
 		return shape
-def initWeightsS(senderShape, receiverShape):
-	chance = min(1.0 / senderShape * 10.0, 1.5)
-	w = torch.rand((senderShape, receiverShape))
+def initWeightsS(shape):
+	chance = min(1.0 / shape[0] * 10.0, 1.5)
+	w = torch.rand(shape)
 	w = (w - (1.0-chance)).clamp_min(0.0) / chance
 	w /= w.sum(dim=0, keepdim=True) + 0.0001
 	return w
-def initWeightsZero(senderShape, receiverShape):
-	return torch.zeros((senderShape, receiverShape))
+def initWeightsZero(shape):
+	return torch.zeros(shape)
 
 def rescale(thisInput, rescaleTo):
 	m = thisInput.mean()
 	if m>rescaleTo: thisInput = thisInput/(m/rescaleTo)
 	return thisInput
+
+# Connection shapes
+class FullConnection:
+	def getShape(self, senderSize, receiverSize): return (senderSize, receiverSize)
+	def forward(self, v, w): return v @ w
+	def backward(self, v, w): return v @ w.T
+	def multSyn(self, senderFactor, receiverFactor): return senderFactor[:,None] * receiverFactor[None,:]
+fullConnection = FullConnection()
 
 class Layer:
 	def __init__(self, shape: int):
@@ -50,46 +58,68 @@ class Layer:
 		self.v = torch.zeros(self.size)
 		self.output = torch.zeros(self.size)
 		self.prevOutput = torch.zeros(self.size)
-		self.w = {}
+		self.connectionShape = {}
 		self.inputs = {}
+		self.w = {}
 		self.senderInhibit = {} # which senders inhibit
 		self.receivers = set()
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
-	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS):
-		if not sender in self.w:
-			self.w[sender] = initWeights(sender.size, self.size)
+	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS, connectionShape=fullConnection):
+		if not sender in self.connectionShape:
+			self.connectionShape[sender] = connectionShape
+			self.w[sender] = initWeights(connectionShape.getShape(sender.size, self.size))
 		self.senderInhibit[sender] = inhibit
 		self.inputs[sender] = sender.output
 		sender.receivers.add(self)
 
 		if inhibit:
-			self.inputExcitatory -= sender.output @ self.w[sender]
+			self.inputExcitatory -= connectionShape.forward(sender.output, self.w[sender])
 		else:
-			self.inputExcitatory += sender.output @ self.w[sender]
+			self.inputExcitatory += connectionShape.forward(sender.output, self.w[sender])
 			if bidirectional:
-				sender.inputExcitatory += self.output @ self.w[sender].T * 0.2
+				sender.inputExcitatory += connectionShape.backward(self.output, self.w[sender]) * 0.2
 
-	def inputv(self, v, key, initWeights=initWeightsS, rescaleTo=None):
-		if not key in self.w:
-			self.w[key] = initWeights(flattenShape(v.shape), self.size)
+	def inputv(self, v, key, initWeights=initWeightsS, connectionShape=fullConnection, rescaleTo=None):
+		if not key in self.connectionShape:
+			self.connectionShape[key] = connectionShape
+			self.w[key] = initWeights(connectionShape.getShape(flattenShape(v.shape), self.size))
 		self.senderInhibit[key] = False
 		self.inputs[key] = v
-		v = v @ self.w[key]
+		v = connectionShape.forward(v.flatten(), self.w[key])
 		if rescaleTo is not None:
 			v = rescale(v, rescaleTo)
 		self.inputExcitatory += v
 
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
+
+	"""
+	def inputConv(self, sender, bidirectional=True, initWeights=initWeightsS):
+		#todo: channel sizes, learning, kernel size
+		if not sender in self.w:
+			self.w[sender] = initWeights(3*3, self.size)
+		self.senderInhibit[sender] = False
+		self.inputs[sender] = sender.output
+		sender.receivers.add(self)
+
+		s = F.conv2d(sender.output.view(1,1,*sender.shape), self.w[sender].view(-1,1,3,3), padding=1).view(-1)
+		self.inputExcitatory += s
+		if bidirectional:
+			s2 = F.conv_transpose2d(self.output.view(1,1,*self.shape), self.w[sender].view(-1,1,3,3).transpose(0,1), padding=1).view(-1)
+			sender.inputExcitatory += s2 * 0.2
+	"""
+
 	def updateInhibit(self):
-		feedforwardInhibition = ((self.inputExcitatory.mean()+self.inputExcitatory.max())/2.0 - 1.0).clamp_min(0.0) # if input is more than 1, start inhibiting it
+		feedforwardInhibition = self.inputExcitatory.mean().clamp_min(0.0) # inhibit it so that only some of them are active
 		feedbackInhibition = self.prevOutput.mean()
 		if len(self.shape) > 1:
-			feedforwardInhibition = torch.maximum(feedforwardInhibition, ((self.inputExcitatory.view(self.shape).mean(dim=1, keepdim=True) + self.inputExcitatory.view(self.shape).amax(dim=1, keepdim=True))/2.0 - 1.0).clamp_min(0.0))
-			feedbackInhibition = torch.maximum(feedbackInhibition, self.prevOutput.view(self.shape).mean(dim=1, keepdim=True))
-		self.feedbackInhibition.lerp_(feedbackInhibition, 0.5)
+			p = self.inputExcitatory.view(self.shape).mean(dim=1, keepdim=True).clamp_min(0.0)
+			feedforwardInhibition = torch.maximum(feedforwardInhibition, p) # by using the maximum of column and layer inhibition, only the most active ones in the most active column are active
+			p = self.prevOutput.view(self.shape).mean(dim=1, keepdim=True)
+			feedbackInhibition = torch.maximum(feedbackInhibition, p)
+		self.feedbackInhibition.lerp_(feedbackInhibition*0.5, 0.5)
 		self.inputInhibition += (feedforwardInhibition + self.feedbackInhibition).expand(self.shape).flatten()
 
 	def updateV(self):
@@ -100,7 +130,7 @@ class Layer:
 		else:
 			netInput = self.inputExcitatory - self.inputInhibition
 			self.v += (netInput - self.v) * 0.5
-			self.output = torch.tanh(2.0*self.v.clamp_min(0.0))
+			self.output = torch.tanh(self.v.clamp_min(0.0)*8.0)
 		self.prevInputExcitatory = self.inputExcitatory
 		self.prevInputInhibition = self.inputInhibition
 		self.inputExcitatory = torch.zeros(self.size)
@@ -109,6 +139,7 @@ class Layer:
 		self.updateV()
 		boostActivity(self)
 
+
 def phaseLearn(self):
 	if vars.alphaCycleProgress["minusPhaseEnd"]:
 		self.outputMinusPhase = self.output.clone()
@@ -116,7 +147,7 @@ def phaseLearn(self):
 		for sender in self.inputs:
 			senderOutput = self.inputs[sender]
 			if self.senderInhibit[sender]: senderOutput = -senderOutput
-			self.w[sender] += (self.output-self.outputMinusPhase)[None,:] * senderOutput[:,None] * vars.lr
+			self.w[sender] += self.connectionShape[sender].multSyn(senderOutput, self.output-self.outputMinusPhase) * vars.lr
 			self.w[sender].clamp_(0.0,1.0)
 
 def boostActivity(self):
@@ -137,15 +168,15 @@ def boostActivity(self):
 			#self.w[sender] += ((self.output-mean)*(1.0-std))[None,:] * self.w[sender] * vars.boostActivitySpeed
 
 def traceRewardLearn(self):
-	if vars.alphaCycleProgress["end"]:
-		if not hasattr(self, "senderTrace"):
-			self.trace = {}
-		for sender in self.inputs:
-			if not sender in self.trace:
-				self.trace[sender] = torch.zeros(self.w[sender].shape)
-			senderOutput = self.inputs[sender]
-			if self.senderInhibit[sender]: senderOutput = -senderOutput
-			self.trace[sender] += (senderOutput[:,None] * self.output[None,:] - self.trace[sender]) * vars.traceDecay
+	if not hasattr(self, "senderTrace"):
+		self.trace = {}
+	for sender in self.inputs:
+		if not sender in self.trace:
+			self.trace[sender] = torch.zeros(self.w[sender].shape)
+		senderOutput = self.inputs[sender]
+		if self.senderInhibit[sender]: senderOutput = -senderOutput
+		self.trace[sender] += (self.connectionShape[sender].multSyn(senderOutput, self.output) - self.trace[sender]) * vars.traceDecay
+		if vars.alphaCycleProgress["end"]:
 			if vars.hasReward:
 				self.w[sender] += self.trace[sender] * vars.hasReward * vars.lr
 
@@ -227,7 +258,7 @@ class RewardPredLayers(): #todo: finish
 			if self.acq.senderInhibit[sender]: senderOutput = -senderOutput
 			self.acq.senderTrace[sender] += (senderOutput - self.acq.senderTrace[sender]) * vars.traceDecay
 			if vars.hasReward:
-				self.acq.w[sender] += abs(vars.hasReward) * self.acq.senderTrace[sender][:,None] * (self.acq.output * (self.acq.prevOutput-self.acq.output))[None,:] * vars.lr
+				self.acq.w[sender] += abs(vars.hasReward) * self.acq.connectionShape[sender].multSyn(self.acq.senderTrace[sender], (self.acq.output * (self.acq.prevOutput-self.acq.output))) * vars.lr
 				self.acq.senderTrace[sender] *= min(1.0 - abs(vars.hasReward), 0.0)
 			self.acq.w[sender].clamp_(0.0,1.0)
 
@@ -279,7 +310,7 @@ dPatchD2 = DecideLayer(decideShape)
 dDecision = None
 def updateDecide():
 	dInputs = [whatInputLayer,whereInputLayer]
-	for i in dInputs:
+	for i in dInputs: # todo: col to col
 		dMtxGo.input(i, bidirectional=False)
 		dMtxNogo.input(i, bidirectional=False)
 		dPatchD1.input(i, bidirectional=False)
@@ -289,25 +320,26 @@ def updateDecide():
 	dPatchD1.update()
 	dPatchD2.update()
 	global dDecision
-	dDecision = dMtxGo.output.view(decideShape).mean(dim=1, keepdim=True) - dMtxNogo.output.view(decideShape).mean(dim=1, keepdim=True)
+	dDecision = (dMtxGo.output.view(decideShape).mean(dim=1, keepdim=True) - dMtxNogo.output.view(decideShape).mean(dim=1, keepdim=True)).clamp_min(0.0)
 	decision = dDecision.expand(decideShape).flatten()
 	dDecision = dDecision.flatten()
 	d1 = dPatchD1.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
 	d2 = dPatchD2.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
 	for sender in dInputs:
-		goOffTrace = torch.where(decision<0.1, (d2 - d1) * sender.output[:,None] * dMtxGo.output[None,:] * 0.1, 0.0)
-		nogoOffTrace = torch.where(decision<0.1, (d2 - d1) * sender.output[:,None] * dMtxNogo.output[None,:] * 0.1, 0.0)
-		dMtxGo.addTrace(sender, decision * ((1.0-d1)+d2) * sender.output[:,None] * dMtxGo.output[None,:] + goOffTrace)
-		dMtxNogo.addTrace(sender, decision * ((1.0-d1)+d2) * sender.output[:,None] * dMtxNogo.output[None,:] + nogoOffTrace)
-		dPatchD1.addTrace(sender, decision * sender.output[:,None] * dPatchD1.output[None,:])
-		dPatchD2.addTrace(sender, decision * sender.output[:,None] * dPatchD2.output[None,:])
-		if vars.hasReward:
-			dMtxGo.w[sender] += dMtxGo.trace[sender] * vars.hasReward * vars.lr
-			dMtxNogo.w[sender] -= dMtxNogo.trace[sender] * vars.hasReward * vars.lr
-			dPatchD1.w[sender] += dPatchD1.trace[sender] * vars.hasReward * vars.lr
-			dPatchD2.w[sender] -= dPatchD2.trace[sender] * vars.hasReward * vars.lr
-		dPatchD1.w[sender].clamp_(0.0,1.0)
-		dPatchD2.w[sender].clamp_(0.0,1.0)
+		goOffTrace = torch.where(decision<0.1, dMtxGo.connectionShape[sender].multSyn(sender.output, (d2 - d1) * dMtxGo.output) * 0.1, 0.0)
+		nogoOffTrace = torch.where(decision<0.1, dMtxNogo.connectionShape[sender].multSyn(sender.output, (d2 - d1) * dMtxNogo.output) * 0.1, 0.0)
+		dMtxGo.addTrace(sender, dMtxGo.connectionShape[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxGo.output) + goOffTrace)
+		dMtxNogo.addTrace(sender, dMtxNogo.connectionShape[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxNogo.output) + nogoOffTrace)
+		dPatchD1.addTrace(sender, dPatchD1.connectionShape[sender].multSyn(sender.output, decision * dPatchD1.output))
+		dPatchD2.addTrace(sender, dPatchD2.connectionShape[sender].multSyn(sender.output, decision * dPatchD2.output))
+		if vars.alphaCycleProgress["end"]:
+			if vars.hasReward:
+				dMtxGo.w[sender] += dMtxGo.trace[sender] * vars.hasReward * vars.lr
+				dMtxNogo.w[sender] -= dMtxNogo.trace[sender] * vars.hasReward * vars.lr
+				dPatchD1.w[sender] += dPatchD1.trace[sender] * vars.hasReward * vars.lr
+				dPatchD2.w[sender] -= dPatchD2.trace[sender] * vars.hasReward * vars.lr
+			dPatchD1.w[sender].clamp_(0.0,1.0)
+			dPatchD2.w[sender].clamp_(0.0,1.0)
 
 	# <ChatGPT>: For the motor thalamus (VA/VL nuclei) specifically: It’s tonically active, but its activity is continuously inhibited by the basal ganglia output nuclei (GPi/SNr).
 
@@ -368,9 +400,10 @@ def plotThem():
 	plotAt(0,0, env.video.reshape(224,224,4), "video")
 	plotAt(0,1, whatInputLayer.output.view(12,16), "whatInputLayer")
 	plotAt(0,2, whereInputLayer.output.view(28,28), "whereInputLayer")
-	plotAt(1,1, [rewardPredPositive.acq.output], "rewardPredPositive")
-	plotAt(1,2, [rewardPredNegative.acq.output], "rewardPredNegative")
+	plotAt(1,0, [rewardPredPositive.acq.output], "rewardPredPositive")
+	plotAt(1,1, [rewardPredNegative.acq.output], "rewardPredNegative")
 	#axs[2,0].imshow([positiveOutcomePredictor.output], vmin=0,vmax=1); axs[2,0].set_title("positiveOutcomePredictor")
+	plotAt(1,3, [dDecision], "dDecision")
 	plotAt(2,0, dMtxGo.output.view(dMtxGo.shape), "dMtxGo")
 	plotAt(2,1, dMtxNogo.output.view(dMtxNogo.shape), "dMtxNogo")
 	plotAt(2,2, dPatchD1.output.view(dPatchD1.shape), "dPatchD1")
@@ -397,6 +430,9 @@ async def ailoop():
 		else:
 			vars.lr = 0.01
 			vars.boostActivitySpeed = 0.001
+
+		if vars.age < 20:
+			if torch.rand(1)>0.75: vars.hasReward += torch.rand(1).item() * 0.5 # encourage exploration
 
 		video = (tensor(env.video, dtype=torch.float) / 255.0).view(224,224,4)
 		whatwhere = absvit.run(video[:,:,0:3].permute(2,0,1), whatInputLayer.output, whereInputLayer.output)
