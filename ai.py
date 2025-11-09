@@ -40,13 +40,33 @@ def rescale(thisInput, rescaleTo):
 	if m>rescaleTo: thisInput = thisInput/(m/rescaleTo)
 	return thisInput
 
-# Connection shapes
+# Connection patterns
 class FullConnection:
-	def getShape(self, senderSize, receiverSize): return (senderSize, receiverSize)
-	def forward(self, v, w): return v @ w
-	def backward(self, v, w): return v @ w.T
+	def __init__(self, senderSize=None, receiverSize=None):
+		self.shape = (senderSize, receiverSize)
+		self.w = None
+	def forward(self, v): return v @ self.w
 	def multSyn(self, senderFactor, receiverFactor): return senderFactor[:,None] * receiverFactor[None,:]
-fullConnection = FullConnection()
+class FullBackConnection(FullConnection):
+	def forward(self, v): return v @ self.w.T
+
+class ConvConnection:
+	def __init__(self, kernelSize: int, stride: int=1, padding: int=0):
+		self.kernelSize = kernelSize
+		self.stride = stride
+		self.padding = padding
+		self.shape = (kernelSize, kernelSize)
+		self.w = None
+	def forward(self, v):
+		v2d = v.view(1,v.shape[2],v.shape[0],v.shape[1])
+		out = F.conv2d(v2d, self.w.view(1,1,self.kernelSize,self.kernelSize), stride=self.stride, padding=self.padding)
+		return out.view(-1)
+class ConvBackConnection(ConvConnection):
+	def forward(self, v):
+		v2d = v.view(1,v.shape[2],v.shape[0],v.shape[1])
+		out = F.conv_transpose2d(v2d, self.w.view(1,1,self.kernelSize,self.kernelSize), stride=self.stride, padding=self.padding)
+		return out.view(-1)
+	
 
 class Layer:
 	def __init__(self, shape: int):
@@ -58,7 +78,7 @@ class Layer:
 		self.v = torch.zeros(self.size)
 		self.output = torch.zeros(self.size)
 		self.prevOutput = torch.zeros(self.size)
-		self.connectionShape = {}
+		self.connections = {}
 		self.inputs = {}
 		self.w = {}
 		self.senderInhibit = {} # which senders inhibit
@@ -66,50 +86,42 @@ class Layer:
 		self.feedbackInhibition = torch.zeros(shape)
 		self.constantOutput = None
 
-	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS, connectionShape=fullConnection):
-		if not sender in self.connectionShape:
-			self.connectionShape[sender] = connectionShape
-			self.w[sender] = initWeights(connectionShape.getShape(sender.size, self.size))
+	def input(self, sender, inhibit=False, bidirectional=True, initWeights=initWeightsS, connection=None, backConnection=None):
+		if not sender in self.connections:
+			if connection is None: connection = FullConnection(sender.size, self.size)
+			self.w[sender] = initWeights(connection.shape)
+			self.connections[sender] = connection
+			connection.w = self.w[sender]
+			if bidirectional:
+				if backConnection is None: backConnection = FullBackConnection(sender.size, self.size)
+				sender.connections[self] = backConnection
+				backConnection.w = self.w[sender]
 		self.senderInhibit[sender] = inhibit
 		self.inputs[sender] = sender.output
 		sender.receivers.add(self)
 
 		if inhibit:
-			self.inputExcitatory -= connectionShape.forward(sender.output, self.w[sender])
+			self.inputExcitatory -= self.connections[sender].forward(sender.output)
 		else:
-			self.inputExcitatory += connectionShape.forward(sender.output, self.w[sender])
+			self.inputExcitatory += self.connections[sender].forward(sender.output)
 			if bidirectional:
-				sender.inputExcitatory += connectionShape.backward(self.output, self.w[sender]) * 0.2
+				sender.inputExcitatory += sender.connections[self].forward(self.output) * 0.2
 
-	def inputv(self, v, key, initWeights=initWeightsS, connectionShape=fullConnection, rescaleTo=None):
-		if not key in self.connectionShape:
-			self.connectionShape[key] = connectionShape
-			self.w[key] = initWeights(connectionShape.getShape(flattenShape(v.shape), self.size))
+	def inputv(self, v, key, initWeights=initWeightsS, connection=None, rescaleTo=None):
+		if not key in self.connections:
+			if connection is None: connection = FullConnection(flattenShape(v.shape), self.size)
+			self.w[key] = initWeights(connection.shape)
+			self.connections[key] = connection
+			connection.w = self.w[key]
 		self.senderInhibit[key] = False
 		self.inputs[key] = v
-		v = connectionShape.forward(v.flatten(), self.w[key])
+		v = self.connections[key].forward(v.flatten())
 		if rescaleTo is not None:
 			v = rescale(v, rescaleTo)
 		self.inputExcitatory += v
 
 	def inputTensor(self, t):
 		self.inputExcitatory += t.flatten()
-
-	"""
-	def inputConv(self, sender, bidirectional=True, initWeights=initWeightsS):
-		#todo: channel sizes, learning, kernel size
-		if not sender in self.w:
-			self.w[sender] = initWeights(3*3, self.size)
-		self.senderInhibit[sender] = False
-		self.inputs[sender] = sender.output
-		sender.receivers.add(self)
-
-		s = F.conv2d(sender.output.view(1,1,*sender.shape), self.w[sender].view(-1,1,3,3), padding=1).view(-1)
-		self.inputExcitatory += s
-		if bidirectional:
-			s2 = F.conv_transpose2d(self.output.view(1,1,*self.shape), self.w[sender].view(-1,1,3,3).transpose(0,1), padding=1).view(-1)
-			sender.inputExcitatory += s2 * 0.2
-	"""
 
 	def updateInhibit(self):
 		feedforwardInhibition = self.inputExcitatory.mean().clamp_min(0.0) # inhibit it so that only some of them are active
@@ -147,7 +159,7 @@ def phaseLearn(self):
 		for sender in self.inputs:
 			senderOutput = self.inputs[sender]
 			if self.senderInhibit[sender]: senderOutput = -senderOutput
-			self.w[sender] += self.connectionShape[sender].multSyn(senderOutput, self.output-self.outputMinusPhase) * vars.lr
+			self.w[sender] += self.connections[sender].multSyn(senderOutput, self.output-self.outputMinusPhase) * vars.lr
 			self.w[sender].clamp_(0.0,1.0)
 
 def boostActivity(self):
@@ -175,7 +187,7 @@ def traceRewardLearn(self):
 			self.trace[sender] = torch.zeros(self.w[sender].shape)
 		senderOutput = self.inputs[sender]
 		if self.senderInhibit[sender]: senderOutput = -senderOutput
-		self.trace[sender] += (self.connectionShape[sender].multSyn(senderOutput, self.output) - self.trace[sender]) * vars.traceDecay
+		self.trace[sender] += (self.connections[sender].multSyn(senderOutput, self.output) - self.trace[sender]) * vars.traceDecay
 		if vars.alphaCycleProgress["end"]:
 			if vars.hasReward:
 				self.w[sender] += self.trace[sender] * vars.hasReward * vars.lr
@@ -258,7 +270,7 @@ class RewardPredLayers(): #todo: finish
 			if self.acq.senderInhibit[sender]: senderOutput = -senderOutput
 			self.acq.senderTrace[sender] += (senderOutput - self.acq.senderTrace[sender]) * vars.traceDecay
 			if vars.hasReward:
-				self.acq.w[sender] += abs(vars.hasReward) * self.acq.connectionShape[sender].multSyn(self.acq.senderTrace[sender], (self.acq.output * (self.acq.prevOutput-self.acq.output))) * vars.lr
+				self.acq.w[sender] += abs(vars.hasReward) * self.acq.connections[sender].multSyn(self.acq.senderTrace[sender], (self.acq.output * (self.acq.prevOutput-self.acq.output))) * vars.lr
 				self.acq.senderTrace[sender] *= min(1.0 - abs(vars.hasReward), 0.0)
 			self.acq.w[sender].clamp_(0.0,1.0)
 
@@ -290,6 +302,28 @@ class PFLayer(DeeppredLayer):
 		super().update()
 		if gate[0] > 0.5:
 			self.memLayer.copy_(self.output)
+
+"""
+class Net:
+	def __init__(self):
+		self.layers = []
+	def add(self, layer):
+		self.layers.append(layer)
+		layer.connections = []
+		return layer
+	def connect(self, sender, receiver, connection=fullConnection, **kwargs):
+		receiver.connections.append((sender, connection, kwargs))
+	def forward(self):
+		for layer in self.layers:
+			for (sender, connection, kwargs) in layer.connections:
+				layer.input(sender, connection=connection, **kwargs)
+			layer.update()
+
+vnet=Net()
+v1=vnet.add(Layer(10))
+v2=vnet.add(Layer(10))
+vnet.connect(v1,v2, ConvConnection(3))
+"""
 
 
 # Awesome idea!
@@ -326,12 +360,12 @@ def updateDecide():
 	d1 = dPatchD1.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
 	d2 = dPatchD2.output.view(decideShape).mean(dim=1, keepdim=True).expand(decideShape).flatten()
 	for sender in dInputs:
-		goOffTrace = torch.where(decision<0.1, dMtxGo.connectionShape[sender].multSyn(sender.output, (d2 - d1) * dMtxGo.output) * 0.1, 0.0)
-		nogoOffTrace = torch.where(decision<0.1, dMtxNogo.connectionShape[sender].multSyn(sender.output, (d2 - d1) * dMtxNogo.output) * 0.1, 0.0)
-		dMtxGo.addTrace(sender, dMtxGo.connectionShape[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxGo.output) + goOffTrace)
-		dMtxNogo.addTrace(sender, dMtxNogo.connectionShape[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxNogo.output) + nogoOffTrace)
-		dPatchD1.addTrace(sender, dPatchD1.connectionShape[sender].multSyn(sender.output, decision * dPatchD1.output))
-		dPatchD2.addTrace(sender, dPatchD2.connectionShape[sender].multSyn(sender.output, decision * dPatchD2.output))
+		goOffTrace = torch.where(decision<0.1, dMtxGo.connections[sender].multSyn(sender.output, (d2 - d1) * dMtxGo.output) * 0.1, 0.0)
+		nogoOffTrace = torch.where(decision<0.1, dMtxNogo.connections[sender].multSyn(sender.output, (d2 - d1) * dMtxNogo.output) * 0.1, 0.0)
+		dMtxGo.addTrace(sender, dMtxGo.connections[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxGo.output) + goOffTrace)
+		dMtxNogo.addTrace(sender, dMtxNogo.connections[sender].multSyn(sender.output, decision * ((1.0-d1)+d2) * dMtxNogo.output) + nogoOffTrace)
+		dPatchD1.addTrace(sender, dPatchD1.connections[sender].multSyn(sender.output, decision * dPatchD1.output))
+		dPatchD2.addTrace(sender, dPatchD2.connections[sender].multSyn(sender.output, decision * dPatchD2.output))
 		if vars.alphaCycleProgress["end"]:
 			if vars.hasReward:
 				dMtxGo.w[sender] += dMtxGo.trace[sender] * vars.hasReward * vars.lr
