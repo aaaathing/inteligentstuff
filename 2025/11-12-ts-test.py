@@ -1,6 +1,7 @@
 import torch
 from torch import tensor
 import torch.nn as nn
+from typing import Any
 
 class A(nn.Module):
 	def __init__(self):
@@ -33,9 +34,11 @@ class A(nn.Module):
 	@torch.jit.export
 	def testarg(self, o:"N"):
 		return o.idx
-def geta(a:nn.ModuleList):
-	for i in a:
-		return i.weight
+def geta(a:Any):
+	#for i in a:
+	#	return i.weight
+	if isinstance(a,nn.Linear):
+		return a.weight
 	
 class N(nn.Module):
 	def __init__(self):
@@ -55,7 +58,7 @@ class N(nn.Module):
 	def what(self):
 		for i in self.children(): i.dostuff()
 	@torch.jit.export
-	def geta(self):return geta(self.a.l)
+	def geta(self):return geta(self.a.l[0])
 
 a=torch.jit.script(N())
 print(a(torch.rand(10)))

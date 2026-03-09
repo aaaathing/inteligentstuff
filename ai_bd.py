@@ -16,7 +16,7 @@ def initWeightsSparse(shape):
 	chance = min(1.0 / flattenShape(shape[1:]) * 10.0, 1.5)
 	w = torch.rand(shape)
 	w = (w - (1.0-chance)).clamp_min(0.0) / chance
-	w /= w.sum(dim=0, keepdim=True) + 0.0001
+	w /= w.sum(dim=tuple(range(1,w.ndim)), keepdim=True) + 0.0001
 	return w
 
 class FullConnection(nn.Module):
@@ -74,9 +74,9 @@ class Layer(nn.Module):
     def updateActivation(self):
         input = self.forward_input + self.backward_input*0.2
 
-        feedforwardInhibition = (input.mean() - 0.1).clamp_min(0.0) # inhibit it so that only some of them are active
+        feedforwardInhibition = ((input.mean()*0.7+input.amax()*0.3) - 0.05).clamp_min(0.0) # inhibit it so that only some of them are active
         if len(self.shape) > 1:
-            p = (input.mean(dim=-1, keepdim=True) - 0.1).clamp_min(0.0)
+            p = ((input.mean(dim=-1, keepdim=True)*0.7+input.amax(dim=-1, keepdim=True)*0.3) - 0.05).clamp_min(0.0)
             feedforwardInhibition = torch.maximum(feedforwardInhibition, p) # by using the maximum of column and layer inhibition, only the most active ones in the most active column are active
         input -= feedforwardInhibition
 
@@ -98,6 +98,20 @@ class Layer(nn.Module):
     
     def onMinusPhaseEnd(self, net):
         self.minusPhaseActivation = self.activation
+
+#def hebblearn(layer, conn):#this test
+#    if not hasattr(layer,"avg"):layer.avg=torch.zeros(layer.shape)
+#    layer.avg+=(layer.activation-layer.avg)*0.2
+#    conn.weight += (conn.multEachW(conn.input, layer.activation-layer.avg))*0.1
+def boostActivity(self,net,conns):
+    if not hasattr(self, "avgOutputActivity"):
+        self.avgOutputActivity = torch.zeros(self.shape)
+    target = self.avgOutputActivity.mean(dim=-1,keepdim=True) # for each pool
+    self.avgOutputActivity += (self.activation - self.avgOutputActivity) * net.longAvgSpeed
+    #actPct = self.avgOutputActivity / self.avgOutputActivity.sum(dim=-1,keepdim=True)
+    for conn in conns:
+        conn.weight += conn.multEachW(torch.ones_like(conn.input),((target - self.avgOutputActivity))) * conn.weight * net.lr
+
 
 class DeeppredLayers(nn.Module):
     def __init__(self, shape, connectTo:list["DeeppredLayers"], connection_class, backward_connection_class, *args, **kwargs):
@@ -123,27 +137,28 @@ class DeeppredLayers(nn.Module):
     def ct_forward(self, net):
         self.ct.forward([self.ct_connection.forward(self.prev_ct_input)], net)
         return self.ct.activation
-    def forward(self, lower, higher_ct: list[Tensor], net, external_input=None):
-        input = [conn.forward(lower[i][0]) for i, conn in enumerate(self.layer_connections)]
-        input += [conn.forward(lower[i][1]) for i, conn in enumerate(self.lower_p_to_layer_connections)]
+    def forward(self, lower, higher_ct, net, external_input=None):
+        input = [conn.forward(lower[i].layer.activation) for i, conn in enumerate(self.layer_connections)]
+        input += [conn.forward(lower[i].p.activation) for i, conn in enumerate(self.lower_p_to_layer_connections)]
         if external_input is not None: input.append(external_input)
         self.layer.forward(input, net)
-        self.p.forward([conn.forward(higher_ct[i]) for i, conn in enumerate(self.higher_ct_to_p_connections)], net) # P -> CT
+        self.p.forward([conn.forward(higher_ct[i].ct.activation) for i, conn in enumerate(self.higher_ct_to_p_connections)], net) # P -> CT
         if net.plus_phase: self.p.activation = self.layer.activation.clone()
-        return self.layer.activation, self.p.activation
+        #return self.layer.activation, self.p.activation
     def backward_p(self, net):
         self.p.backward([], net)
         if net.plus_phase: self.p.activation = self.layer.activation.clone()
         return self.p.activation
     def backward(self, higher_layer, lower_p, net):
-        self.ct.backward([conn.backward(lower_p[i]) for i, conn in enumerate(self.lower_p_back_to_ct_connections)], net) # P <- CT
-        self.layer.backward([conn.backward(higher_layer[i]) for i, conn in enumerate(self.layer_back_connections)], net)
+        self.ct.backward([conn.backward(lower_p[i].ct.activation) for i, conn in enumerate(self.lower_p_back_to_ct_connections)], net) # P <- CT
+        self.layer.backward([conn.backward(higher_layer[i].layer.activation) for i, conn in enumerate(self.layer_back_connections)], net)
         return self.layer.activation
     def onPlusPhaseEnd(self, net):
         for conn in self.layer_connections:
             conn.weight += conn.multEachW(conn.input, self.layer.activation-self.layer.minusPhaseActivation) * net.lr
         for conn in self.lower_p_to_layer_connections:
             conn.weight += conn.multEachW(conn.input, self.layer.activation-self.layer.minusPhaseActivation) * net.lr
+        boostActivity(self.layer,net,self.layer_connections+self.lower_p_to_layer_connections)
         for conn in self.higher_ct_to_p_connections:
             conn.weight += conn.multEachW(conn.input, self.p.activation-self.p.minusPhaseActivation) * net.lr
         self.ct_connection.weight += self.ct_connection.multEachW(self.ct_connection.input, self.ct.activation-self.ct.minusPhaseActivation) * net.lr
@@ -169,25 +184,25 @@ class DecideModule(nn.Module):
     self.d2_connection_trace = [torch.zeros(conn.weight.shape) for conn in self.d2_connection]
 
   def forward(self, input, net):
-    go_input = [conn.forward(input[i]) for i, conn in enumerate(self.go_connection)]
+    go_input = [conn.forward(input[i].activation) for i, conn in enumerate(self.go_connection)]
     self.mtxGo.forward(go_input, net)
-    nogo_input = [conn.forward(input[i]) for i, conn in enumerate(self.nogo_connection)]
+    nogo_input = [conn.forward(input[i].activation) for i, conn in enumerate(self.nogo_connection)]
     self.mtxNoGo.forward(nogo_input, net)
-    d1_input = [conn.forward(input[i]) for i, conn in enumerate(self.d1_connection)]
+    d1_input = [conn.forward(input[i].activation) for i, conn in enumerate(self.d1_connection)]
     self.patchD1.forward(d1_input, net)
-    d2_input = [conn.forward(input[i]) for i, conn in enumerate(self.d2_connection)]
+    d2_input = [conn.forward(input[i].activation) for i, conn in enumerate(self.d2_connection)]
     self.patchD2.forward(d2_input, net)
 
     decision = (self.mtxGo.activation.mean(1, keepdim=True) - self.mtxNoGo.activation.mean(1, keepdim=True)).clamp_min(0.0)
     d1 = self.patchD1.activation.mean(1, keepdim=True)
     d2 = self.patchD2.activation.mean(1, keepdim=True)
     for i, (go_conn, nogo_conn, d1_conn, d2_conn) in enumerate(zip(self.go_connection, self.nogo_connection, self.d1_connection, self.d2_connection)):
-        goOffTrace = go_conn.multEachW(input[i], torch.where(decision<0.1, (d2 - d1) * self.mtxGo.activation, 0.0)) * 0.1
-        nogoOffTrace = nogo_conn.multEachW(input[i], torch.where(decision<0.1, (d2 - d1) * self.mtxNoGo.activation, 0.0)) * 0.1
-        addTrace(self.go_connection_trace[i], go_conn.multEachW(input[i], decision * ((1.0-d1)+d2) * self.mtxGo.activation) + goOffTrace, net.traceDecay)
-        addTrace(self.nogo_connection_trace[i], nogo_conn.multEachW(input[i], decision * ((1.0-d1)+d2) * self.mtxNoGo.activation) + nogoOffTrace, net.traceDecay)
-        addTrace(self.d1_connection_trace[i], d1_conn.multEachW(input[i], decision * self.patchD1.activation), net.traceDecay)
-        addTrace(self.d2_connection_trace[i], d2_conn.multEachW(input[i], decision * self.patchD2.activation), net.traceDecay)
+        goOffTrace = go_conn.multEachW(input[i].activation, torch.where(decision<0.1, (d2 - d1) * self.mtxGo.activation, 0.0)) * 0.1
+        nogoOffTrace = nogo_conn.multEachW(input[i].activation, torch.where(decision<0.1, (d2 - d1) * self.mtxNoGo.activation, 0.0)) * 0.1
+        addTrace(self.go_connection_trace[i], go_conn.multEachW(input[i].activation, decision * ((1.0-d1)+d2) * self.mtxGo.activation) + goOffTrace, net.traceDecay)
+        addTrace(self.nogo_connection_trace[i], nogo_conn.multEachW(input[i].activation, decision * ((1.0-d1)+d2) * self.mtxNoGo.activation) + nogoOffTrace, net.traceDecay)
+        addTrace(self.d1_connection_trace[i], d1_conn.multEachW(input[i].activation, decision * self.patchD1.activation), net.traceDecay)
+        addTrace(self.d2_connection_trace[i], d2_conn.multEachW(input[i].activation, decision * self.patchD2.activation), net.traceDecay)
     return decision
   def onPlusPhaseEnd(self, net):
     if net.reward:
@@ -201,19 +216,30 @@ class DecideModule(nn.Module):
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
-        self.l1 = DeeppredLayers((10,10,3), [], ConvConnection, ConvConnection)
-        self.l2 = DeeppredLayers((10,10,3), [self.l1], ConvConnection, ConvConnection)
-        self.decide = DecideModule((5,36), [self.l1.layer, self.l2.layer])
+        self.v1 = DeeppredLayers((10,10,3), [], ConvConnection, ConvConnection)
+        self.v2 = DeeppredLayers((10,10,3), [self.v1], ConvConnection, ConvConnection)
+        self.v3 = DeeppredLayers((10,10,3), [self.v2], ConvConnection, ConvConnection)
+        self.sem1 = DeeppredLayers((10,100), [self.v3], FullConnection, FullConnection)
+        self.decide = DecideModule((5,36), [self.sem1.layer])
         
     def forward(self):
-        l2_ct = self.l2.ct_forward(self)
-        l1_out = self.l1.forward([], [l2_ct], self, external_input=self.input)
-        l2_out = self.l2.forward([l1_out], [], self)
-        decision = self.decide.forward([self.l1.layer.activation, self.l2.layer.activation], self)
+        self.v2.ct_forward(self)
+        self.v1.forward([], [self.v2], self, external_input=self.input)
+        self.v3.ct_forward(self)
+        self.v2.forward([self.v1], [self.v3], self)
+        self.sem1.ct_forward(self)
+        self.v3.forward([self.v2], [self.sem1], self)
+        self.sem1.forward([self.v3], [], self)
+        self.decide.forward([self.sem1.layer], self)
     def backward(self):
-        l1_p = self.l1.backward_p(self)
-        l2_out = self.l2.backward([], [l1_p], self)
-        l1_out = self.l1.backward([l2_out], [], self)
+        self.sem1.backward_p(self)
+        self.v3.backward_p(self)
+        self.sem1.backward([], [self.v3], self)
+        self.v2.backward_p(self)
+        self.v3.backward([self.sem1], [self.v2], self)
+        self.v1.backward_p(self)
+        self.v2.backward([self.v3], [self.v1], self)
+        self.v1.backward([self.v2], [], self)
 
     input1=(torch.rand((10,10,3))>0.9).float()
     input2=(torch.rand((10,10,3))>0.9).float()
@@ -221,6 +247,7 @@ class Network(nn.Module):
         self.lr = 0.01
         self.traceDecay = 0.1
         self.reward = 1.0 if torch.rand(1).item() > 0.5 else 0.0
+        self.longAvgSpeed = 0.05
 
         self.input = self.input1 if self.reward else self.input2
 
@@ -253,12 +280,12 @@ def plotThem():
     axs[0,3].clear()
     axs[0,3].text(0.1,0.1, f"reward: {net.reward}")
     plotAt(0,0, net.input, "input")
-    plotAt(1,0, net.l1.layer, "l1.layer")
-    plotAt(1,1, net.l1.ct, "l1.ct")
-    plotAt(1,2, net.l1.p, "l1.p")
-    plotAt(2,0, net.l2.layer, "l2.layer")
-    plotAt(2,1, net.l2.ct, "l2.ct")
-    plotAt(2,2, net.l2.p, "l2.p")
+    plotAt(1,0, net.v1.layer, "v1.layer")
+    plotAt(1,1, net.v1.ct, "v1.ct")
+    plotAt(1,2, net.v1.p.minusPhaseActivation, "v1.p minus")
+    plotAt(2,0, net.v2.layer, "v2.layer")
+    plotAt(2,1, net.v3.layer, "v3.layer")
+    plotAt(2,2, net.sem1.layer, "sem1.layer")
     plotAt(3,0, net.decide.mtxGo, "decide Go")
     plotAt(3,1, net.decide.mtxNoGo, "decide NoGo")
     plotAt(3,2, net.decide.patchD1, "decide D1")
@@ -267,4 +294,4 @@ def plotThem():
 for i in range(100):
     net.step()
     plotThem()
-    plt.pause(2)
+    plt.pause(0.1)
